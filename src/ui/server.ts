@@ -16,17 +16,17 @@ function stateView(): unknown {
   const now = Date.now();
   const live = new Set(liveAgentIds(d));
   const runsDir = path.join(store.dir, "runs");
-  let runs: { file: string; mtime: number }[] = [];
+  let allRuns: { file: string; mtime: number }[] = [];
   try {
-    runs = fs
+    allRuns = fs
       .readdirSync(runsDir)
       .filter((f) => f.endsWith(".log"))
       .map((f) => ({ file: f, mtime: fs.statSync(path.join(runsDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, 20);
+      .sort((a, b) => b.mtime - a.mtime);
   } catch {
     /* no runs yet */
   }
+  const runs = allRuns.slice(0, 20);
   return {
     project: path.basename(process.cwd()),
     cwd: process.cwd(),
@@ -38,11 +38,14 @@ function stateView(): unknown {
     tickets: d.tickets.map((t) => ({
       id: t.id,
       title: t.title,
+      desc: t.desc,
       status: t.status,
       owner: t.owner ?? null,
       resolution: t.resolution ?? null,
       routedTo: t.routedTo ?? null,
       lastNote: t.notes.at(-1)?.text ?? null,
+      notes: t.notes,
+      runs: allRuns.filter((r) => r.file.startsWith(`${t.id}-`)).map((r) => r.file),
     })),
     claims: d.claims.filter((c) => c.expiresAt > now).map((c) => ({ agent: c.agent, paths: c.paths })),
     facts: [...d.facts]

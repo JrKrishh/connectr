@@ -47,7 +47,10 @@ describe("connectr ui server", () => {
 
     const state = await (await fetch(base + "/api/state")).json();
     expect(state.mode).toBe("auto");
-    expect(state.tickets.some((t: { id: string }) => t.id === created.ticket.id)).toBe(true);
+    const mine = state.tickets.find((t: { id: string }) => t.id === created.ticket.id);
+    expect(mine).toBeDefined();
+    expect(Array.isArray(mine.notes)).toBe(true); // thread data
+    expect(Array.isArray(mine.runs)).toBe(true);
   });
 
   it("rejects bad task input with a 400", async () => {

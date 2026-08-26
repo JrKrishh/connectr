@@ -67,6 +67,15 @@ export const UI_HTML = `<!doctype html>
   #logtail{background:#0D1210;border:1px solid var(--line);border-radius:8px;padding:10px;font-family:Consolas,ui-monospace,monospace;
     font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto;color:var(--muted);display:none}
   .empty{color:var(--muted);font-size:12.5px}
+  .card{cursor:pointer}
+  .card.sel{border-color:var(--accent)}
+  #thread{display:none;background:var(--panel2);border:1px solid var(--accent);border-radius:8px;padding:12px;margin:12px 0 0}
+  .th-head{font-size:14px}
+  .th-head .route{color:var(--muted);font-family:Consolas,ui-monospace,monospace;font-size:12px}
+  .th-desc{color:var(--muted);font-size:12.5px;margin:6px 0}
+  .th-notes{margin-top:6px}
+  .th-note{border-top:1px solid var(--line);padding:4px 0;font-family:Consolas,ui-monospace,monospace;font-size:12px;color:var(--muted)}
+  .th-note .who{color:var(--accent)}
 </style>
 </head>
 <body>
@@ -100,6 +109,7 @@ export const UI_HTML = `<!doctype html>
       <div class="col"><h3 id="h-prog"></h3><div id="c-prog"></div></div>
       <div class="col"><h3 id="h-done"></h3><div id="c-done"></div></div>
     </div>
+    <div id="thread"></div>
     <h2>Run logs</h2>
     <div class="runs" id="runs"></div>
     <div id="logtail"></div>
@@ -117,13 +127,13 @@ export const UI_HTML = `<!doctype html>
 "use strict";
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c];});}
 function el(id){return document.getElementById(id);}
-var selectedLog=null, logTimer=null;
+var selectedLog=null, logTimer=null, selectedTicket=null, lastState=null;
 
 function setMsg(text, isErr){var m=el("msg");m.textContent=text||"";m.className=isErr?"err":"";}
 
 function card(t){
   var route=t.routedTo?esc(t.routedTo.tool)+(t.routedTo.model?":"+esc(t.routedTo.model):""):"";
-  var html='<div class="card'+(t.status==="closed"?" closed":"")+'">';
+  var html='<div class="card'+(t.status==="closed"?" closed":"")+(t.id===selectedTicket?" sel":"")+'" data-id="'+esc(t.id)+'">';
   html+='<span class="tid">'+esc(t.id)+'</span> ';
   if(route)html+='<span class="route">&rarr; '+route+'</span>';
   if(t.resolution)html+='<span class="route"> ('+esc(t.resolution)+')</span>';
@@ -134,7 +144,42 @@ function card(t){
   return html;
 }
 
+function renderThread(s){
+  var box=el("thread");
+  var t=null;
+  for(var i=0;i<s.tickets.length;i++)if(s.tickets[i].id===selectedTicket)t=s.tickets[i];
+  if(!t){box.style.display="none";return;}
+  box.style.display="block";
+  var route=t.routedTo?esc(t.routedTo.tool)+(t.routedTo.model?":"+esc(t.routedTo.model):""):"unrouted";
+  var html='<div class="th-head"><span class="tid">'+esc(t.id)+'</span> <b>'+esc(t.title)+'</b>  <span class="route">['+esc(t.status)+(t.resolution?" &middot; "+esc(t.resolution):"")+'] &rarr; '+route+(t.owner?" &middot; @"+esc(t.owner):"")+'</span></div>';
+  if(t.desc)html+='<div class="th-desc">'+esc(t.desc)+"</div>";
+  if(t.notes&&t.notes.length){
+    html+='<div class="th-notes">'+t.notes.map(function(n){
+      return '<div class="th-note"><span class="who">'+esc(n.agent)+"</span> "+esc(n.text)+"</div>";
+    }).join("")+"</div>";
+  }
+  if(t.runs&&t.runs.length){
+    html+='<div class="runs" style="margin-top:8px">'+t.runs.map(function(r){
+      return '<span class="runpill'+(r===selectedLog?" sel":"")+'" data-f="'+esc(r)+'">'+esc(r)+"</span>";
+    }).join("")+"</div>";
+  }else{
+    html+='<div class="empty" style="margin-top:6px">no runs for this ticket yet</div>';
+  }
+  box.innerHTML=html;
+}
+
+function selectTicket(id){
+  selectedTicket=(selectedTicket===id)?null:id;
+  if(selectedTicket&&lastState){
+    var t=null;
+    for(var i=0;i<lastState.tickets.length;i++)if(lastState.tickets[i].id===selectedTicket)t=lastState.tickets[i];
+    if(t&&t.runs&&t.runs.length&&selectedLog!==t.runs[0])toggleLog(t.runs[0]);
+  }
+  if(lastState)render(lastState);
+}
+
 function render(s){
+  lastState=s;
   el("proj").textContent=s.project;
   el("mode").textContent="mode "+s.mode;
   el("mode").className="chip mode-"+s.mode;
@@ -168,11 +213,17 @@ function render(s){
   el("runs").innerHTML=s.runs.map(function(r){
     return '<span class="runpill'+(r===selectedLog?" sel":"")+'" data-f="'+esc(r)+'">'+esc(r)+"</span>";
   }).join("")||'<div class="empty">no run logs yet</div>';
-  var pills=el("runs").querySelectorAll(".runpill");
-  for(var i=0;i<pills.length;i++){
-    pills[i].onclick=function(){toggleLog(this.getAttribute("data-f"));};
-  }
+  renderThread(s);
 }
+
+document.addEventListener("click",function(e){
+  var target=e.target;
+  if(!target||!target.closest)return;
+  var pill=target.closest(".runpill");
+  if(pill){toggleLog(pill.getAttribute("data-f"));return;}
+  var c=target.closest(".card");
+  if(c&&c.getAttribute("data-id"))selectTicket(c.getAttribute("data-id"));
+});
 
 function toggleLog(file){
   if(selectedLog===file){selectedLog=null;el("logtail").style.display="none";if(logTimer)clearInterval(logTimer);logTimer=null;refresh();return;}
