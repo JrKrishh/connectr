@@ -5,6 +5,7 @@ import path from "node:path";
 import type http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startUi } from "../src/ui/server.js";
+import { UI_HTML } from "../src/ui/page.js";
 
 let server: http.Server;
 let base = "";
@@ -23,6 +24,24 @@ afterAll(async () => {
   if (prevStore === undefined) delete process.env.CONNECTR_STORE;
   else process.env.CONNECTR_STORE = prevStore;
   await new Promise<void>((r) => server.close(() => r()));
+});
+
+describe("embedded page", () => {
+  // page.ts is one big template literal, so a single backslash is eaten before the browser
+  // sees it. That silently ships a broken regex and kills the whole script - these two
+  // checks are what catch it.
+  const script = UI_HTML.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+
+  it("has a script that actually parses", () => {
+    expect(script.length).toBeGreaterThan(1000);
+    expect(() => new Function(script)).not.toThrow();
+  });
+
+  it("keeps regex escapes intact through the template literal", () => {
+    expect(script).toContain(String.raw`https?:\/\/`); // not https?://
+    expect(script).toContain(String.raw`\s`); // not a bare "s"
+    expect(script).not.toMatch(/https\?:\/\/\[\^s/); // the exact shape of the bug
+  });
 });
 
 describe("connectr ui server", () => {

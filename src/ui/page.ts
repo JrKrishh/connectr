@@ -147,9 +147,34 @@ export const UI_HTML = `<!doctype html>
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .term-h .live-b{margin-left:auto;display:flex;align-items:center;gap:5px;
     font-family:var(--mono);font-size:10.5px;color:var(--accent)}
-  .term pre{margin:0;padding:12px 13px;max-height:340px;overflow:auto;
-    font-family:var(--mono);font-size:11.5px;line-height:1.55;color:var(--muted);
-    white-space:pre-wrap;word-break:break-word}
+
+  /* the transcript: agents write markdown, so read it as prose, not as a terminal dump */
+  .tx{margin:0;padding:16px 18px;max-height:460px;overflow:auto;
+    font-size:13.5px;line-height:1.65;color:var(--ink)}
+  .tx p{margin:0 0 10px;max-width:68ch;color:var(--muted)}
+  .tx p:last-child{margin-bottom:0}
+  .tx strong{color:var(--ink);font-weight:600}
+  .tx em{color:var(--ink);font-style:italic}
+  .tx h3,.tx h4,.tx h5{margin:18px 0 8px;font-size:14px;font-weight:600;color:var(--ink);
+    letter-spacing:-.005em}
+  .tx h3:first-child,.tx h4:first-child{margin-top:0}
+  .tx .li{margin:0 0 6px;padding-left:18px;position:relative;max-width:68ch;color:var(--muted)}
+  .tx .li::before{content:"";position:absolute;left:5px;top:9px;width:4px;height:4px;
+    border-radius:50%;background:var(--faint)}
+  .tx .li.num::before{display:none}
+  .tx .li .n{position:absolute;left:0;color:var(--faint);font-family:var(--mono);font-size:11.5px}
+  .tx code{font-family:var(--mono);font-size:.86em;background:var(--raised);
+    border:1px solid var(--border);border-radius:4px;padding:1px 5px;color:var(--ink);
+    white-space:nowrap}
+  .tx pre.code{margin:0 0 12px;padding:11px 13px;background:var(--bg);
+    border:1px solid var(--border);border-radius:var(--r-sm);overflow-x:auto;
+    font-family:var(--mono);font-size:11.5px;line-height:1.55;color:var(--muted);white-space:pre}
+  .tx a{color:var(--accent)}
+  .tx .sp{height:6px}
+  .tx .banner{display:flex;align-items:center;gap:8px;margin:0 0 14px;padding:7px 11px;
+    border-radius:var(--r-sm);background:var(--accent-dim);color:var(--accent);
+    font-family:var(--mono);font-size:11px;border:1px solid var(--border)}
+  .tx .banner + .banner{margin-top:16px}
   .runtabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px}
   .rt{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:999px;
     border:1px solid var(--border);background:none;color:var(--muted)}
@@ -324,6 +349,51 @@ var I={
 
 var sel=null, selLog=null, logTimer=null, pending=null, last=null, toastT=null, autoPicked=false;
 
+/* ---------- transcript ----------
+   Agents write markdown, so render it instead of dumping it. Everything is escaped
+   first and only then given tags, so agent output can never inject markup.
+   BT is built from a char code because this whole file is a template literal. */
+var BT=String.fromCharCode(96);
+var FENCE=BT+BT+BT;
+
+// NOTE: this file is a template literal, so every backslash below is doubled - a single
+// one is eaten before the browser ever sees it (\\s would ship as a literal "s").
+function mdInline(s){
+  s=esc(s);
+  // inline code first, so formatting inside it is left alone
+  s=s.replace(new RegExp(BT+"([^"+BT+"]+)"+BT,"g"),"<code>$1</code>");
+  s=s.replace(/\\*\\*([^*]+)\\*\\*/g,"<strong>$1</strong>");
+  s=s.replace(/(^|[^*])\\*([^*\\s][^*]*)\\*/g,"$1<em>$2</em>");
+  s=s.replace(/(https?:\\/\\/[^\\s<)]+)/g,'<a href="$1" target="_blank" rel="noreferrer">$1</a>');
+  return s;
+}
+
+function renderTranscript(text){
+  var lines=String(text==null?"":text).split(/\\r?\\n/);
+  var out=[], code=[], inCode=false;
+  for(var i=0;i<lines.length;i++){
+    var L=lines[i];
+    if(L.indexOf(FENCE)===0){
+      if(inCode){out.push('<pre class="code">'+esc(code.join("\\n"))+"</pre>");code=[];inCode=false;}
+      else inCode=true;
+      continue;
+    }
+    if(inCode){code.push(L);continue;}
+    var banner=L.match(/^=== connectr dispatch (.+?) ===$/);
+    if(banner){out.push('<div class="banner">'+I.play+esc(banner[1])+"</div>");continue;}
+    var h=L.match(/^(#{1,6})\\s+(.*)$/);
+    if(h){var lvl=Math.min(h[1].length,3)+2;out.push("<h"+lvl+">"+mdInline(h[2])+"</h"+lvl+">");continue;}
+    var ul=L.match(/^\\s*[-*+]\\s+(.*)$/);
+    if(ul){out.push('<div class="li">'+mdInline(ul[1])+"</div>");continue;}
+    var ol=L.match(/^\\s*(\\d+)[.)]\\s+(.*)$/);
+    if(ol){out.push('<div class="li num"><span class="n">'+esc(ol[1])+'.</span>'+mdInline(ol[2])+"</div>");continue;}
+    if(L.trim()===""){out.push('<div class="sp"></div>');continue;}
+    out.push("<p>"+mdInline(L)+"</p>");
+  }
+  if(code.length)out.push('<pre class="code">'+esc(code.join("\\n"))+"</pre>");
+  return out.join("")||'<p>no output yet</p>';
+}
+
 function toast(msg,isErr){
   var t=el("toast");
   t.textContent=msg; t.className="on"+(isErr?" err":"");
@@ -438,7 +508,7 @@ function renderDetail(s){
     }
     h+='<div class="term"><div class="term-h">'+I.term+'<span class="f">'+esc(selLog||t.runs[0])+'</span>'+
       (t.status==="in_progress"?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
-      '</div><pre id="logtail">loading…</pre></div>';
+      '</div><div class="tx" id="logtail">loading…</div></div>';
   }else{
     h+='<div class="none">no agent has run on this ticket yet</div>';
   }
@@ -501,7 +571,8 @@ function followLog(file){
     fetch("/api/log?file="+encodeURIComponent(file)).then(function(r){return r.json();}).then(function(d){
       var box=el("logtail"); if(!box)return;
       var stick=box.scrollTop+box.clientHeight>=box.scrollHeight-24;
-      box.textContent=d.tail||"(no output yet)";
+      var next=renderTranscript(d.tail);
+      if(box.innerHTML!==next)box.innerHTML=next;
       if(stick)box.scrollTop=box.scrollHeight;
     }).catch(function(){});
   };
