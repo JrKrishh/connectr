@@ -4,9 +4,38 @@ import fs from "node:fs";
 import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
 import { PERMISSION_MODES, effectiveRules, loadConfig, resolveTool, saveConfig, type PermissionMode } from "../routing.js";
+import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
 import { launchTicket, toolKnown } from "../spawn.js";
 import type { Ticket } from "../types.js";
-import { ALL_TARGETS, applyEdit, hasConnectr } from "./targets.js";
+import { ALL_TARGETS, applyEdit, hasConnectr, type ToolTarget } from "./targets.js";
+
+function wireTargets(targets: ToolTarget[], dryRun?: boolean): { changed: number; unchanged: number } {
+  let changed = 0;
+  let unchanged = 0;
+  for (const target of targets) {
+    for (const edit of target.edits()) {
+      const already = hasConnectr(edit);
+      if (dryRun) {
+        console.log(`[dry-run] ${already ? "(exists)" : "(new)"} ${edit.label} -> ${edit.file}`);
+        continue;
+      }
+      try {
+        const did = applyEdit(edit);
+        if (did) {
+          changed++;
+          console.log(`wired   ${edit.label} -> ${edit.file}`);
+        } else {
+          unchanged++;
+          console.log(`ok      ${edit.label} (already wired)`);
+        }
+      } catch (e) {
+        console.error(`FAILED  ${edit.label} (${edit.file}): ${(e as Error).message}`);
+        process.exitCode = 1;
+      }
+    }
+  }
+  return { changed, unchanged };
+}
 
 const program = new Command();
 
@@ -35,30 +64,7 @@ program
       return;
     }
     const targets = opts.global ? [...ALL_TARGETS] : [...ALL_TARGETS].filter((t) => t.scope === "project");
-    let changed = 0;
-    let unchanged = 0;
-    for (const target of targets) {
-      for (const edit of target.edits()) {
-        const already = hasConnectr(edit);
-        if (opts.dryRun) {
-          console.log(`[dry-run] ${already ? "(exists)" : "(new)"} ${edit.label} -> ${edit.file}`);
-          continue;
-        }
-        try {
-          const did = applyEdit(edit);
-          if (did) {
-            changed++;
-            console.log(`wired   ${edit.label} -> ${edit.file}`);
-          } else {
-            unchanged++;
-            console.log(`ok      ${edit.label} (already wired)`);
-          }
-        } catch (e) {
-          console.error(`FAILED  ${edit.label} (${edit.file}): ${(e as Error).message}`);
-          process.exitCode = 1;
-        }
-      }
-    }
+    const { changed, unchanged } = wireTargets(targets, opts.dryRun);
     if (!opts.dryRun) {
       const config = loadConfig(process.cwd());
       if (opts.mode) {
@@ -72,6 +78,136 @@ program
         `\nDone. ${changed} file(s) written, ${unchanged} already up to date.\nRestart your coding tools so they pick up the new MCP config, then ask an agent:\n  "Use connectr whoami and board_view, then tell me what you see."`
       );
     }
+  });
+
+program
+  .command("new")
+  .description("Create a project: folder + PLAN.md + a suggested orchestra of coding tools wired to one brain")
+  .argument("<dir>", "project folder (created if missing)")
+  .option("--plan <file>", "project brief to install as PLAN.md")
+  .option("--tools <list>", "comma-separated tools to wire, skipping the suggestion: claude-code,codex,gemini,cursor,kiro,antigravity")
+  .option("--mode <mode>", "dispatch permission profile: safe | auto | yolo", "auto")
+  .option("-y, --yes", "accept the suggested orchestra without prompting")
+  .action(async (dir: string, opts: { plan?: string; tools?: string; mode: string; yes?: boolean }) => {
+    if (!PERMISSION_MODES.includes(opts.mode as PermissionMode)) {
+      console.error(`unknown mode '${opts.mode}' - use safe, auto or yolo`);
+      process.exitCode = 1;
+      return;
+    }
+    const root = path.resolve(dir);
+    fs.mkdirSync(root, { recursive: true });
+    process.chdir(root); // init targets resolve project files against cwd
+
+    // 1. the plan
+    const planPath = path.join(root, "PLAN.md");
+    let planCreated = false;
+    if (opts.plan) {
+      const src = path.resolve(opts.plan);
+      if (!fs.existsSync(src)) {
+        console.error(`plan file not found: ${src}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (src !== planPath) fs.copyFileSync(src, planPath);
+    } else if (!fs.existsSync(planPath)) {
+      fs.writeFileSync(planPath, PLAN_TEMPLATE);
+      planCreated = true;
+    }
+    const planText = fs.readFileSync(planPath, "utf8");
+
+    // 2. detect + suggest the orchestra
+    const detected = detectTools();
+    const suggestions = suggestOrchestra(planText, detected);
+    const known = detected.map((d) => d.tool);
+    console.log(`project: ${root}\nplan   : PLAN.md${planCreated ? " (template - fill it in!)" : ""}\n`);
+    console.log("orchestra suggestion (from your plan + what's installed):");
+    for (const s of suggestions) {
+      console.log(`  [${s.suggested ? "x" : " "}] ${s.tool.padEnd(12)} ${s.kind.padEnd(12)} ${s.reason}`);
+    }
+
+    // 3. selection: --tools > interactive confirm > suggestion
+    let selected = suggestions.filter((s) => s.suggested).map((s) => s.tool);
+    if (opts.tools) {
+      selected = opts.tools.split(",").map((s) => s.trim()).filter(Boolean);
+      const bad = selected.filter((t) => !known.includes(t));
+      if (bad.length > 0) {
+        console.error(`unknown tool(s): ${bad.join(", ")} - use ${known.join(", ")}`);
+        process.exitCode = 1;
+        return;
+      }
+    } else if (!opts.yes && process.stdin.isTTY && process.stdout.isTTY) {
+      const readline = await import("node:readline/promises");
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question("\nwire these tools? [Y]es / [n]o / comma-list to override: ")).trim();
+      rl.close();
+      if (/^n/i.test(answer)) {
+        console.log("aborted - nothing wired");
+        return;
+      }
+      if (answer && !/^y/i.test(answer)) {
+        selected = answer.split(",").map((s) => s.trim()).filter(Boolean);
+        const bad = selected.filter((t) => !known.includes(t));
+        if (bad.length > 0) {
+          console.error(`unknown tool(s): ${bad.join(", ")} - use ${known.join(", ")}`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+    }
+    if (selected.length === 0) {
+      console.error("no tools selected - install at least one coding tool or pass --tools");
+      process.exitCode = 1;
+      return;
+    }
+
+    // 4. wire only the selected tools (+ the tool-agnostic AGENTS.md block)
+    const slugs = new Set<string>(["agents-md"]);
+    for (const d of detected) if (selected.includes(d.tool)) for (const s of d.targetSlugs) slugs.add(s);
+    console.log("");
+    wireTargets(ALL_TARGETS.filter((t) => slugs.has(t.slug)));
+
+    // 5. project config
+    const config = loadConfig(root);
+    config.permissionMode = opts.mode as PermissionMode;
+    config.tools = selected;
+    config.planFile = "PLAN.md";
+    saveConfig(root, config);
+
+    // 6. seed the board: the first agent decomposes the plan into tickets
+    const store = new Store(root);
+    const dispatchTool = suggestions.find((s) => s.kind === "dispatch" && selected.includes(s.tool))?.tool;
+    const seeded = await store.mutate((d): string | null => {
+      if (d.tickets.length > 0) return null;
+      const t: Ticket = {
+        id: nextId("t", d.tickets),
+        title: "Decompose PLAN.md into tickets on the board",
+        desc:
+          "Read PLAN.md. For each concrete work item, call ticket_create with a clear title and acceptance criteria. Use words like backend/api, cli/script, or docs in titles so auto-routing lands well. Do not build anything in this ticket - only create the others, then close this one.",
+        status: "open",
+        notes: [],
+        createdBy: "connectr-new",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        routedTo: { tool: dispatchTool ?? "claude-code", auto: true },
+      };
+      d.tickets.push(t);
+      return t.id;
+    });
+
+    console.log(
+      [
+        "",
+        `wired: ${selected.join(", ")}   mode: ${opts.mode}`,
+        seeded ? `board: seeded ${seeded} -> "${"Decompose PLAN.md into tickets"}" (routed to ${dispatchTool ?? "claude-code"})` : "board: existing tickets kept",
+        "",
+        "next:",
+        planCreated ? "  1. fill in PLAN.md" : "  1. review PLAN.md",
+        `  2. cd ${dir}`,
+        "  3. connectr run     (dispatches the decompose ticket - the board fills itself)",
+        "     or connectr dash (interactive host)",
+        "  restart IDE tools (Cursor/Kiro/Antigravity) so they pick up the MCP config",
+      ].join("\n")
+    );
   });
 
 const taskCmd = program
@@ -168,7 +304,10 @@ program
     }
     const runsDir = path.join(store.dir, "runs");
     const children = plan.map((p) => {
-      const { child, logFile } = launchTicket(p.ticket, process.cwd(), runsDir, { mode: config.permissionMode });
+      const { child, logFile } = launchTicket(p.ticket, process.cwd(), runsDir, {
+        mode: config.permissionMode,
+        planFile: config.planFile,
+      });
       if (!child) {
         console.log(`${p.ticket.id}: ${p.tool} NOT FOUND - skipped`);
         return null;

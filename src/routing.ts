@@ -38,6 +38,8 @@ export interface ConnectrConfig {
     defaultTool: string;
   };
   permissionMode: PermissionMode;
+  tools?: string[]; // orchestra selected at `connectr new` (informational)
+  planFile?: string; // project brief injected into dispatched agents' prompts
 }
 
 export const DEFAULT_RULES: RoutingRule[] = [
@@ -63,6 +65,8 @@ export function loadConfig(root: string): ConnectrConfig {
           defaultTool: typeof raw?.routing?.defaultTool === "string" ? raw.routing.defaultTool : DEFAULT_TOOL,
         },
         permissionMode: PERMISSION_MODES.includes(raw?.permissionMode) ? raw.permissionMode : DEFAULT_PERMISSION_MODE,
+        ...(Array.isArray(raw?.tools) ? { tools: raw.tools.filter((t: unknown) => typeof t === "string") } : {}),
+        ...(typeof raw?.planFile === "string" ? { planFile: raw.planFile } : {}),
       };
     } catch {
       /* corrupt config falls through to defaults */

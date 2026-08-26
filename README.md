@@ -29,7 +29,20 @@ The protocol (injected into each tool's instruction file by `connectr init`):
 npm install -g connectr-mcp
 ```
 
-In any project worked on by multiple agents:
+Starting a brand-new project? Let ConnectR assemble the orchestra:
+
+```bash
+connectr new my-app --plan brief.md   # folder + PLAN.md + suggested tools, one brain
+```
+
+`new` reads your plan, detects what's installed, and suggests which tools this project
+needs — dispatch CLIs matched per area (backend→claude-code, scripts→codex, docs→gemini)
+and installed IDEs (Cursor/Kiro/Antigravity) joining as participants via MCP. Confirm or
+override (`--tools claude-code,codex`), and it wires only those, saves the plan into every
+dispatched agent's prompt, and seeds ticket #1: *"Decompose PLAN.md into tickets"* — run it
+and the board fills itself.
+
+In an existing project worked on by multiple agents:
 
 ```bash
 connectr init          # wires project-scope configs: .mcp.json (Claude Code),

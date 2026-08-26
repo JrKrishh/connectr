@@ -83,7 +83,7 @@ function Dashboard(): React.JSX.Element {
   const [message, setMessage] = useState("");
   const [showLog, setShowLog] = useState(false);
   const [logTail, setLogTail] = useState<LogTail | null>(null);
-  const [pending, setPending] = useState<{ plan: Ticket[]; mode: PermissionMode } | null>(null);
+  const [pending, setPending] = useState<{ plan: Ticket[]; mode: PermissionMode; planFile?: string } | null>(null);
   const dispatchedRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -141,17 +141,17 @@ function Dashboard(): React.JSX.Element {
       setMessage("no open tickets to dispatch");
       return;
     }
-    setPending({ plan, mode: config.permissionMode });
+    setPending({ plan, mode: config.permissionMode, planFile: config.planFile });
     const summary = plan.map((t) => `${t.id}→${t.routedTo!.tool}${t.routedTo!.model ? `:${t.routedTo!.model}` : ""}`).join(" · ");
     setMessage(`will dispatch [mode ${config.permissionMode}]: ${summary} — r again to confirm, any other key cancels`);
   };
 
-  const confirmDispatch = (p: { plan: Ticket[]; mode: PermissionMode }): void => {
+  const confirmDispatch = (p: { plan: Ticket[]; mode: PermissionMode; planFile?: string }): void => {
     setPending(null);
     const runsDir = path.join(new Store().dir, "runs");
     const parts: string[] = [];
     for (const t of p.plan) {
-      const { child } = launchTicket(t, process.cwd(), runsDir, { detach: true, mode: p.mode });
+      const { child } = launchTicket(t, process.cwd(), runsDir, { detach: true, mode: p.mode, planFile: p.planFile });
       if (child) {
         dispatchedRef.current.add(t.id);
         parts.push(`${t.id}→${t.routedTo!.tool}${t.routedTo!.model ? `:${t.routedTo!.model}` : ""} pid ${child.pid}`);

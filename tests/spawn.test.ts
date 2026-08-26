@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildCommand, findCodex, safeModel } from "../src/spawn.js";
+import { buildCommand, findCodex, harnessPrompt, safeModel } from "../src/spawn.js";
+
+describe("harnessPrompt", () => {
+  const ticket = { id: "t1", title: "add auth", desc: "jwt login" };
+
+  it("points the agent at the project brief when one is configured", () => {
+    expect(harnessPrompt(ticket, "codex", ".", "PLAN.md")).toContain("Project brief: read PLAN.md");
+    expect(harnessPrompt(ticket, "codex", ".")).not.toContain("Project brief");
+  });
+});
 
 describe("safeModel", () => {
   it("passes plain model ids through", () => {

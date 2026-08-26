@@ -39,7 +39,7 @@ const MODE_FLAGS: Record<string, Record<PermissionMode, string[]>> = {
   },
 };
 
-function whereOnPath(exe: string): string | null {
+export function whereOnPath(exe: string): string | null {
   const candidates = process.platform === "win32" ? [`${exe}.exe`, `${exe}.cmd`, `${exe}`] : [exe];
   for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
     for (const c of candidates) {
@@ -164,7 +164,7 @@ export function launchTicket(
   ticket: Ticket,
   cwd: string,
   runsDir: string,
-  opts: { detach?: boolean; mode?: PermissionMode } = {}
+  opts: { detach?: boolean; mode?: PermissionMode; planFile?: string } = {}
 ): { child: ChildProcess | null; logFile: string } {
   fs.mkdirSync(runsDir, { recursive: true });
   const tool = ticket.routedTo?.tool ?? "claude-code";
@@ -173,7 +173,7 @@ export function launchTicket(
     tool,
     model: ticket.routedTo?.model,
     cwd,
-    prompt: harnessPrompt(ticket, tool, cwd),
+    prompt: harnessPrompt(ticket, tool, cwd, opts.planFile),
     logFile,
     mode: opts.mode,
     detach: opts.detach,
@@ -181,11 +181,17 @@ export function launchTicket(
   return { child, logFile };
 }
 
-export function harnessPrompt(ticket: { id: string; title: string; desc: string; contract?: string }, tool: string, cwd: string): string {
+export function harnessPrompt(
+  ticket: { id: string; title: string; desc: string; contract?: string },
+  tool: string,
+  cwd: string,
+  planFile?: string
+): string {
   const lines = [
     `You are agent '${tool}' dispatched by ConnectR to work on ticket ${ticket.id}: ${ticket.title}`,
     `Working directory: ${cwd}`,
   ];
+  if (planFile) lines.push(`Project brief: read ${planFile} first - it defines the goal, features and constraints.`);
   if (ticket.desc) lines.push(`Description: ${ticket.desc}`);
   if (ticket.contract) lines.push(`Contract (build against this exactly): ${ticket.contract}`);
   lines.push(
