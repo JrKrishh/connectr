@@ -44,6 +44,7 @@ function stateView(): unknown {
       resolution: t.resolution ?? null,
       routedTo: t.routedTo ?? null,
       lastNote: t.notes.at(-1)?.text ?? null,
+      updatedAt: t.updatedAt,
       notes: t.notes,
       runs: allRuns.filter((r) => r.file.startsWith(`${t.id}-`)).map((r) => r.file),
     })),

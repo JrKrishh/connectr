@@ -30,9 +30,10 @@ describe("connectr ui server", () => {
     const res = await fetch(base + "/");
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("connect");
-    expect(html).toContain("Ticket board");
-    expect(html).toContain("/api/events");
+    expect(html).toContain("<title>connectr</title>");
+    expect(html).toContain("Working now"); // sidebar task groups
+    expect(html).toContain("/api/events"); // live updates wired
+    expect(html).not.toMatch(/https?:\/\/(?!127\.0\.0\.1)/); // no external assets: works offline
   });
 
   it("creates tasks via POST /api/task and shows them in /api/state", async () => {
