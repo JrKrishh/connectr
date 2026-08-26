@@ -345,7 +345,8 @@ var I={
  idle:'<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6.5" r="2.4"/><circle cx="18" cy="6.5" r="2.4"/><circle cx="12" cy="17.5" r="2.4"/><path d="M8.4 6.5h7.2M7.3 8.6l3.4 6.8M16.7 8.6l-3.4 6.8"/></svg>'
 };
 
-var sel=null, selLog=null, logTimer=null, pending=null, last=null, toastT=null, autoPicked=false;
+var sel=null, selLog=null, logTimer=null, logES=null, logBuf="", pending=null, last=null,
+    toastT=null, autoPicked=false;
 
 /* ---------- transcript ----------
    Agents write markdown, so render it instead of dumping it. Everything is escaped
@@ -620,23 +621,53 @@ function overview(s){
   return h+'</div>';
 }
 
-/* ---------- logs ---------- */
-function stopLog(){if(logTimer)clearInterval(logTimer);logTimer=null;}
-function followLog(file){
-  selLog=file;
-  stopLog();
+/* ---------- logs ----------
+   The run log streams over SSE: the server sends a tail, then only what gets appended,
+   so text lands as the agent writes it. Polling stays as the fallback. */
+function stopLog(){
+  if(logTimer)clearInterval(logTimer);
+  logTimer=null;
+  if(logES){try{logES.close();}catch(e){} logES=null;}
+}
+
+function paintLog(){
+  var box=el("logtail"); if(!box)return;
+  var stick=box.scrollTop+box.clientHeight>=box.scrollHeight-24;
+  var t=last&&sel?byId(last,sel):null;
+  var next=renderMerged(t?t.notes:[], logBuf);
+  if(box.innerHTML!==next)box.innerHTML=next;
+  if(stick)box.scrollTop=box.scrollHeight;
+}
+
+function pollLog(file){
+  if(logTimer)return; // already falling back
   var pull=function(){
     fetch("/api/log?file="+encodeURIComponent(file)).then(function(r){return r.json();}).then(function(d){
-      var box=el("logtail"); if(!box)return;
-      var stick=box.scrollTop+box.clientHeight>=box.scrollHeight-24;
-      var t=last&&sel?byId(last,sel):null;
-      var next=renderMerged(t?t.notes:[], d.tail);
-      if(box.innerHTML!==next)box.innerHTML=next;
-      if(stick)box.scrollTop=box.scrollHeight;
+      if(selLog!==file)return;
+      logBuf=d.tail||"";
+      paintLog();
     }).catch(function(){});
   };
   pull();
   logTimer=setInterval(pull,1500);
+}
+
+function followLog(file){
+  selLog=file;
+  stopLog();
+  logBuf="";
+  try{
+    logES=new EventSource("/api/log/stream?file="+encodeURIComponent(file));
+    logES.onmessage=function(ev){
+      if(selLog!==file)return;
+      var d=JSON.parse(ev.data);
+      if(d.chunk){logBuf+=d.chunk;paintLog();}
+    };
+    logES.onerror=function(){
+      // the browser retries on its own; only fall back once it has clearly failed
+      if(logES&&logES.readyState===2){logES=null;pollLog(file);}
+    };
+  }catch(e){pollLog(file);}
 }
 
 /* ---------- state ---------- */

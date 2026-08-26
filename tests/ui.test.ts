@@ -118,6 +118,47 @@ describe("connectr ui server", () => {
     expect(ticket.routedTo.via).toBe("default");
   });
 
+  it("streams a log tail and then pushes what gets appended", async () => {
+    const runs = path.join(process.env.CONNECTR_STORE!, "runs");
+    fs.mkdirSync(runs, { recursive: true });
+    const log = path.join(runs, "t1-stream.log");
+    fs.writeFileSync(log, "first line\n");
+
+    const ctrl = new AbortController();
+    const res = await fetch(base + "/api/log/stream?file=t1-stream.log", { signal: ctrl.signal });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const readChunk = async (): Promise<string> => {
+      const deadline = Date.now() + 8000;
+      let seen = "";
+      while (Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        seen += decoder.decode(value, { stream: true });
+        const line = seen.split("\n").find((l) => l.startsWith("data: "));
+        if (line) return JSON.parse(line.slice(6)).chunk;
+      }
+      return "";
+    };
+
+    expect(await readChunk()).toContain("first line"); // initial tail
+
+    // the agent writes more; the stream should carry only the new bytes
+    fs.appendFileSync(log, "second line\n");
+    const next = await readChunk();
+    expect(next).toContain("second line");
+    expect(next).not.toContain("first line");
+    ctrl.abort();
+  }, 20_000);
+
+  it("refuses to stream a log that does not exist", async () => {
+    const res = await fetch(base + "/api/log/stream?file=nope.log");
+    expect(res.status).toBe(404);
+  });
+
   it("blocks log path traversal", async () => {
     const res = await fetch(base + "/api/log?file=..%2F..%2Fstore.json");
     expect(res.status).toBe(404);

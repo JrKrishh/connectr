@@ -115,6 +115,50 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     });
     return;
   }
+  if (req.method === "GET" && url.pathname === "/api/log/stream") {
+    const file = path.basename(url.searchParams.get("file") ?? ""); // basename kills traversal
+    const full = path.join(new Store().dir, "runs", file);
+    if (!file.endsWith(".log") || !fs.existsSync(full)) {
+      json(res, 404, { error: "log not found" });
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    // Start from a tail rather than the whole file, then send only what gets appended.
+    let pos = Math.max(0, fs.statSync(full).size - 16_000);
+    const push = (): void => {
+      let size: number;
+      try {
+        size = fs.statSync(full).size;
+      } catch {
+        return; // file went away; the heartbeat will keep the stream open
+      }
+      if (size < pos) pos = 0; // truncated or replaced
+      if (size === pos) return;
+      const fd = fs.openSync(full, "r");
+      const buf = Buffer.alloc(size - pos);
+      fs.readSync(fd, buf, 0, buf.length, pos);
+      fs.closeSync(fd);
+      pos = size;
+      res.write(`data: ${JSON.stringify({ chunk: buf.toString("utf8") })}\n\n`);
+    };
+    push();
+    // fs.watch is the fast path; on Windows it can miss events, so a slow interval
+    // guarantees the stream still converges.
+    let watcher: fs.FSWatcher | null = null;
+    try {
+      watcher = fs.watch(full, () => push());
+    } catch {
+      /* fall back to the interval alone */
+    }
+    const timer = setInterval(push, 1000);
+    const beat = setInterval(() => res.write(": beat\n\n"), 15_000);
+    req.on("close", () => {
+      watcher?.close();
+      clearInterval(timer);
+      clearInterval(beat);
+    });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/api/log") {
     const file = path.basename(url.searchParams.get("file") ?? ""); // basename kills traversal
     const full = path.join(new Store().dir, "runs", file);
