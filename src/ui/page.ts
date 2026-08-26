@@ -130,15 +130,6 @@ export const UI_HTML = `<!doctype html>
     color:var(--faint);margin:22px 0 10px;display:flex;align-items:center;gap:8px}
   .desc{font-size:13.5px;color:var(--muted);line-height:1.6;white-space:pre-wrap}
 
-  .tl{display:flex;flex-direction:column;gap:2px}
-  .tl-i{display:flex;gap:11px;padding:9px 0}
-  .tl-i + .tl-i{border-top:1px solid var(--border)}
-  .tl-av{width:24px;height:24px;border-radius:6px;background:var(--raised);border:1px solid var(--border);
-    display:flex;align-items:center;justify-content:center;color:var(--muted);flex:none;margin-top:1px}
-  .tl-b{min-width:0;flex:1}
-  .tl-who{font-family:var(--mono);font-size:11px;color:var(--accent);margin-bottom:2px}
-  .tl-who span{color:var(--faint);margin-left:7px}
-  .tl-tx{font-size:13px;color:var(--muted);line-height:1.55;word-wrap:break-word}
 
   .term{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
   .term-h{display:flex;align-items:center;gap:8px;padding:7px 11px;border-bottom:1px solid var(--border);
@@ -175,6 +166,13 @@ export const UI_HTML = `<!doctype html>
     border-radius:var(--r-sm);background:var(--accent-dim);color:var(--accent);
     font-family:var(--mono);font-size:11px;border:1px solid var(--border)}
   .tx .banner + .banner{margin-top:16px}
+  /* protocol events from the board, interleaved with what the agent wrote */
+  .tx .ev{display:flex;gap:10px;align-items:baseline;margin:0 0 7px;padding:5px 11px;
+    background:var(--raised);border-left:2px solid var(--border);
+    border-radius:0 var(--r-sm) var(--r-sm) 0;font-size:12.5px}
+  .tx .ev-a{font-family:var(--mono);font-size:10.5px;color:var(--accent);flex:none}
+  .tx .ev-t{color:var(--muted);flex:1;min-width:0;overflow-wrap:anywhere}
+  .tx .ev-w{font-family:var(--mono);font-size:10.5px;color:var(--faint);flex:none}
   .runtabs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:9px}
   .rt{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:999px;
     border:1px solid var(--border);background:none;color:var(--muted)}
@@ -368,6 +366,77 @@ function mdInline(s){
   return s;
 }
 
+/* Each dispatch writes a banner carrying tool, mode and an ISO timestamp, so a log can be
+   cut into runs with a known start time - which is what lets board notes be dropped into
+   the right place between them. */
+function splitRuns(text){
+  var lines=String(text==null?"":text).split(/\\r?\\n/);
+  var segs=[], cur={tool:null,mode:null,ts:null,body:[]};
+  for(var i=0;i<lines.length;i++){
+    var m=lines[i].match(/^=== connectr dispatch (\\S+?)(?::(\\S+))? mode=(\\S+) @ (\\S+) ===$/);
+    if(m){
+      if(cur.ts||cur.body.join("").trim())segs.push(cur);
+      cur={tool:m[1]+(m[2]?":"+m[2]:""),mode:m[3],ts:m[4],body:[]};
+      continue;
+    }
+    cur.body.push(lines[i]);
+  }
+  if(cur.ts||cur.body.join("").trim())segs.push(cur);
+  return segs;
+}
+
+// One chronological stream: dispatched -> claimed -> evidence -> closed -> what it wrote.
+// The agent's prose lands after its run's notes because it is written when the run ends.
+function mergedTranscript(notes, logText){
+  var segs=splitRuns(logText), out=[], used={};
+  notes=(notes||[]).slice().sort(function(a,b){return Date.parse(a.ts)-Date.parse(b.ts);});
+  function take(from,to){
+    var got=[];
+    for(var i=0;i<notes.length;i++){
+      if(used[i])continue;
+      var t=Date.parse(notes[i].ts);
+      if(from!==null&&t<from)continue;
+      if(to!==null&&t>=to)continue;
+      used[i]=true; got.push(notes[i]);
+    }
+    return got;
+  }
+  var firstTs=segs.length&&segs[0].ts?Date.parse(segs[0].ts):null;
+  if(firstTs!==null)out.push({k:"ev",v:take(null,firstTs)});
+  for(var i=0;i<segs.length;i++){
+    var s=segs[i];
+    if(s.ts)out.push({k:"banner",v:s});
+    var next=null;
+    for(var j=i+1;j<segs.length;j++){if(segs[j].ts){next=Date.parse(segs[j].ts);break;}}
+    out.push({k:"ev",v:take(s.ts?Date.parse(s.ts):null,next)});
+    out.push({k:"prose",v:s.body.join("\\n")});
+  }
+  var rest=[];
+  for(var k=0;k<notes.length;k++)if(!used[k])rest.push(notes[k]);
+  if(rest.length)out.push({k:"ev",v:rest});
+  return out;
+}
+
+function renderMerged(notes, logText){
+  var blocks=mergedTranscript(notes,logText), html="";
+  for(var i=0;i<blocks.length;i++){
+    var b=blocks[i];
+    if(b.k==="banner"){
+      html+='<div class="banner">'+I.play+esc(b.v.tool)+" &middot; mode "+esc(b.v.mode)+
+        " &middot; "+esc(rel(b.v.ts))+"</div>";
+    }else if(b.k==="ev"){
+      for(var j=0;j<b.v.length;j++){
+        html+='<div class="ev"><span class="ev-a">'+esc(b.v[j].agent)+'</span>'+
+          '<span class="ev-t">'+esc(b.v[j].text)+'</span>'+
+          '<span class="ev-w">'+esc(rel(b.v[j].ts))+"</span></div>";
+      }
+    }else if(b.v&&b.v.trim()){
+      html+=renderTranscript(b.v);
+    }
+  }
+  return html||'<p>nothing has happened on this ticket yet</p>';
+}
+
 function renderTranscript(text){
   var lines=String(text==null?"":text).split(/\\r?\\n/);
   var out=[], code=[], inCode=false;
@@ -490,28 +559,17 @@ function renderDetail(s){
 
   if(t.desc)h+='<div class="sec-h">Brief</div><div class="desc">'+esc(t.desc)+'</div>';
 
-  if(t.notes&&t.notes.length){
-    h+='<div class="sec-h">Activity <span class="n">'+t.notes.length+'</span></div><div class="tl">'+
-      t.notes.map(function(n){
-        return '<div class="tl-i"><span class="tl-av">'+I.bot+'</span><div class="tl-b">'+
-          '<div class="tl-who">'+esc(n.agent)+'<span>'+esc(rel(n.ts))+'</span></div>'+
-          '<div class="tl-tx">'+esc(n.text)+'</div></div></div>';
-      }).join("")+'</div>';
+  h+='<div class="sec-h">Transcript'+(t.notes&&t.notes.length?' <span class="n">'+t.notes.length+' events</span>':'')+'</div>';
+  if(t.runs&&t.runs.length>1){
+    h+='<div class="runtabs">'+t.runs.map(function(r){
+      return '<button class="rt'+(r===selLog?" sel":"")+'" data-f="'+esc(r)+'">'+esc(r)+'</button>';
+    }).join("")+'</div>';
   }
-
-  h+='<div class="sec-h">Output</div>';
-  if(t.runs&&t.runs.length){
-    if(t.runs.length>1){
-      h+='<div class="runtabs">'+t.runs.map(function(r){
-        return '<button class="rt'+(r===selLog?" sel":"")+'" data-f="'+esc(r)+'">'+esc(r)+'</button>';
-      }).join("")+'</div>';
-    }
-    h+='<div class="term"><div class="term-h">'+I.term+'<span class="f">'+esc(selLog||t.runs[0])+'</span>'+
-      (t.status==="in_progress"?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
-      '</div><div class="tx" id="logtail">loading…</div></div>';
-  }else{
-    h+='<div class="none">no agent has run on this ticket yet</div>';
-  }
+  h+='<div class="term"><div class="term-h">'+I.term+'<span class="f">'+
+    esc(t.runs&&t.runs.length?(selLog||t.runs[0]):"board events only - no agent has run yet")+'</span>'+
+    (t.status==="in_progress"?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
+    '</div><div class="tx" id="logtail">'+
+    (t.runs&&t.runs.length?"loading…":renderMerged(t.notes,""))+'</div></div>';
   h+='</div>';
   box.innerHTML=h;
 
@@ -571,7 +629,8 @@ function followLog(file){
     fetch("/api/log?file="+encodeURIComponent(file)).then(function(r){return r.json();}).then(function(d){
       var box=el("logtail"); if(!box)return;
       var stick=box.scrollTop+box.clientHeight>=box.scrollHeight-24;
-      var next=renderTranscript(d.tail);
+      var t=last&&sel?byId(last,sel):null;
+      var next=renderMerged(t?t.notes:[], d.tail);
       if(box.innerHTML!==next)box.innerHTML=next;
       if(stick)box.scrollTop=box.scrollHeight;
     }).catch(function(){});
