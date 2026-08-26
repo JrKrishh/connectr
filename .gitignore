@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.connectr/
+*.log
+
+# products of `connectr init` (machine-specific absolute paths) and local working files
+.mcp.json
+.cursor/
+.kiro/
+demo/
+LAUNCH.md

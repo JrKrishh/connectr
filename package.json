@@ -1,0 +1,56 @@
+{
+  "name": "connectr-mcp",
+  "version": "0.1.0",
+  "description": "Shared brain for AI coding agents - one MCP server giving Claude Code, Codex, Cursor, Kiro, Gemini CLI and Antigravity a common task board, shared memory and advisory file claims.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JrKrishh/connectr.git"
+  },
+  "homepage": "https://github.com/JrKrishh/connectr#readme",
+  "bugs": {
+    "url": "https://github.com/JrKrishh/connectr/issues"
+  },
+  "bin": {
+    "connectr": "dist/cli/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm test"
+  },
+  "keywords": [
+    "mcp",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "kiro",
+    "antigravity",
+    "gemini-cli",
+    "orchestration",
+    "multi-agent"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@types/react": "^19.2.18",
+    "commander": "^14.0.0",
+    "ink": "^7.1.1",
+    "react": "^19.2.8",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}
