@@ -304,7 +304,7 @@ taskCmd
         ? { tool: opts.tool!, model: opts.model, auto: false, via: "manual" as const }
         : (() => {
             const smart = resolveToolSmart(title, opts.desc ?? "", d, config);
-            return { tool: smart.tool, model: opts.model, auto: true, via: smart.via, reason: smart.reason };
+            return { tool: smart.tool, model: opts.model ?? smart.model, auto: true, via: smart.via, reason: smart.reason };
           })();
       const t: Ticket = {
         id: nextId("t", d.tickets),

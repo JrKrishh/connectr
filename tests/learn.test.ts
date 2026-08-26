@@ -135,6 +135,70 @@ describe("learnRoutes", () => {
   });
 });
 
+describe("model-level learning", () => {
+  // Agents report their model through whoami; the store carries it on the agent record.
+  function withModels(tickets: Ticket[], agents: Record<string, string>): StoreData {
+    const d = data(tickets);
+    for (const [id, model] of Object.entries(agents)) {
+      d.agents[id] = { id, tool: id.split("-").slice(0, -1).join("-"), model, pid: 1, cwd: ".", lastSeen: new Date().toISOString() };
+    }
+    return d;
+  }
+
+  it("credits the model that finished the work, not just the tool", () => {
+    const d = withModels([closedTicket("t1", "write the guide docs", "claude-code-11")], { "claude-code-11": "opus" });
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["claude-code:opus"].wins).toBe(1);
+    expect(c.stats["claude-code"]).toBeUndefined();
+  });
+
+  it("routes to a specific model once one proves itself in a category", () => {
+    const d = withModels(
+      [
+        closedTicket("t1", "write the guide docs", "gemini-1"),
+        closedTicket("t2", "update the readme", "gemini-2"),
+        closedTicket("t3", "write user docs", "gemini-2"),
+        closedTicket("t4", "more docs", "gemini-2"),
+      ],
+      { "gemini-1": "gemini-2.5-flash", "gemini-2": "gemini-2.5-pro" }
+    );
+    const smart = resolveToolSmart("write the user guide docs", "", d, config);
+    expect(smart.tool).toBe("gemini");
+    expect(smart.model).toBe("gemini-2.5-pro"); // same tool, model chosen from evidence
+    expect(smart.via).toBe("learned");
+    expect(smart.reason).toContain("strongest gemini");
+  });
+
+  it("counts a model-level routing miss as a loss for the model that was asked", () => {
+    const d = withModels(
+      [closedTicket("t1", "write docs", "gemini-2", { routedTo: { tool: "gemini", model: "gemini-2.5-flash", auto: true } })],
+      { "gemini-2": "gemini-2.5-pro" }
+    );
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["gemini:gemini-2.5-pro"].wins).toBe(1);
+    expect(c.stats["gemini:gemini-2.5-flash"].losses).toBe(1);
+  });
+
+  it("treats the rule's tool as tried when any of its models has run", () => {
+    // gemini only ever ran as a model variant; that still counts as gemini being tried,
+    // so a genuinely stronger other tool is allowed to take the category.
+    const d = withModels(
+      [
+        closedTicket("t1", "write the guide docs", "claude-code-11"),
+        closedTicket("t2", "update the readme", "claude-code-11"),
+        closedTicket("t3", "write user docs", "claude-code-11"),
+        closedTicket("t4", "docs again", "gemini-1"),
+        closedTicket("t5", "more docs", "gemini-1", { resolution: "wontfix" }),
+      ],
+      { "claude-code-11": "", "gemini-1": "gemini-2.5-flash" }
+    );
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["gemini:gemini-2.5-flash"]).toBeDefined();
+    expect(c.learned).toBe(true);
+    expect(c.pick).toBe("claude-code");
+  });
+});
+
 describe("resolveToolSmart", () => {
   it("routes by learned override when evidence exists, else by rule", () => {
     const learned = data([

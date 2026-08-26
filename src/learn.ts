@@ -23,6 +23,22 @@ export function agentTool(d: StoreData, agentId: string): string {
   return m ? m[1] : agentId;
 }
 
+// Outcomes are scored per "target": the tool, plus the model when we know which one ran.
+// Agents report their model through whoami, so a completion can credit claude-code:opus
+// rather than just claude-code - which is what lets routing learn models, not only tools.
+export function targetKey(tool: string, model?: string): string {
+  return model ? `${tool}:${model}` : tool;
+}
+
+export function parseTarget(key: string): { tool: string; model?: string } {
+  const i = key.indexOf(":");
+  return i === -1 ? { tool: key } : { tool: key.slice(0, i), model: key.slice(i + 1) };
+}
+
+export function agentTarget(d: StoreData, agentId: string): string {
+  return targetKey(agentTool(d, agentId), d.agents[agentId]?.model || undefined);
+}
+
 export interface ToolStats {
   wins: number;
   losses: number;
@@ -63,33 +79,52 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
     const { category, ruleTool } = categoryOf(t.title, t.desc, config);
     for (const n of t.notes) {
       const m = n.text.match(/^takeover from '([^']+)'/);
-      if (m) bump(category, ruleTool, agentTool(d, m[1]), "losses");
+      if (m) bump(category, ruleTool, agentTarget(d, m[1]), "losses");
     }
     if (t.resolution !== "completed" || !t.owner) continue;
-    const winner = agentTool(d, t.owner);
+    const winner = agentTarget(d, t.owner);
     bump(category, ruleTool, winner, "wins");
-    if (t.routedTo && t.routedTo.tool !== winner) bump(category, ruleTool, t.routedTo.tool, "losses");
+    const intended = t.routedTo ? targetKey(t.routedTo.tool, t.routedTo.model) : null;
+    if (intended && intended !== winner) bump(category, ruleTool, intended, "losses");
   }
 
   for (const c of table.values()) {
+    // The rule names a tool with no model, so its own baseline is every target that runs
+    // that tool - otherwise a rule tool that always runs with a model looks untried.
+    const ruleEntries = Object.entries(c.stats).filter(([k]) => parseTarget(k).tool === c.ruleTool);
+    // Baseline is the rule's tool at its best showing (or an unseen 0.5 if it never ran),
+    // then anything strictly better takes the category - including another model of the
+    // same tool.
     let best = c.ruleTool;
-    let bestRate = rateOf(c.stats[c.ruleTool]);
-    for (const [tool, s] of Object.entries(c.stats)) {
+    let bestRate = rateOf(undefined);
+    for (const [target, s] of ruleEntries) {
       if (rateOf(s) > bestRate) {
-        best = tool;
+        best = target;
+        bestRate = rateOf(s);
+      }
+    }
+    for (const [target, s] of Object.entries(c.stats)) {
+      if (rateOf(s) > bestRate) {
+        best = target;
         bestRate = rateOf(s);
       }
     }
     // Only override a rule once its own tool has actually been tried here. Without this the
     // router locks onto whoever happened to run first and never lets the rule's tool prove
     // itself - "never tried" would read as "worse than the incumbent".
-    const ruleToolTried = c.stats[c.ruleTool] !== undefined;
-    if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool && ruleToolTried) {
+    const ruleToolTried = ruleEntries.length > 0;
+    if (c.evidence >= MIN_EVIDENCE && parseTarget(best).tool !== c.ruleTool && ruleToolTried) {
       c.pick = best;
       c.learned = true;
       const s = c.stats[best]!;
-      const r = c.stats[c.ruleTool]!;
-      c.reason = `${best} ${s.wins}w/${s.losses}l beats ${c.ruleTool} ${r.wins}w/${r.losses}l here (${c.evidence} outcomes)`;
+      const [rKey, r] = ruleEntries.sort((a, b) => rateOf(b[1]) - rateOf(a[1]))[0];
+      c.reason = `${best} ${s.wins}w/${s.losses}l beats ${rKey} ${r.wins}w/${r.losses}l here (${c.evidence} outcomes)`;
+    } else if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool && ruleToolTried) {
+      // Same tool, better model: keep the tool but adopt the model the board favours.
+      c.pick = best;
+      c.learned = true;
+      const s = c.stats[best]!;
+      c.reason = `${best} ${s.wins}w/${s.losses}l is the strongest ${c.ruleTool} here (${c.evidence} outcomes)`;
     } else if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool) {
       c.pick = c.ruleTool;
       c.learned = false;
@@ -105,6 +140,7 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
 
 export interface SmartRoute {
   tool: string;
+  model?: string;
   via: "learned" | "rule" | "default";
   category: string;
   reason: string;
@@ -113,7 +149,10 @@ export interface SmartRoute {
 export function resolveToolSmart(title: string, desc: string, d: StoreData, config: ConnectrConfig): SmartRoute {
   const { category, ruleTool } = categoryOf(title, desc, config);
   const learning = learnRoutes(d, config).get(category);
-  if (learning?.learned) return { tool: learning.pick, via: "learned", category, reason: learning.reason };
+  if (learning?.learned) {
+    const { tool, model } = parseTarget(learning.pick);
+    return { tool, model, via: "learned", category, reason: learning.reason };
+  }
   return {
     tool: ruleTool,
     via: category === "default" ? "default" : "rule",

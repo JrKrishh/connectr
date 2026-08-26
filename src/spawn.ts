@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_PERMISSION_MODE, KNOWN_TOOLS, type PermissionMode } from "./routing.js";
+import { DEFAULT_PERMISSION_MODE, type PermissionMode } from "./routing.js";
+import { expandArgs, findTool, toolRegistry, type ToolSpec } from "./tools.js";
 import type { Ticket } from "./types.js";
 
 export interface SpawnOptions {
@@ -13,31 +14,15 @@ export interface SpawnOptions {
   model?: string;
   mode?: PermissionMode;
   detach?: boolean; // survive the parent exiting (dash host); logs go straight to the file fd
+  userTools?: ToolSpec[];
   env?: Record<string, string>;
 }
 
-// What each permission mode means per tool. safe = read/plan, writes blocked unless the
-// project's own settings allow them; auto = edits allowed, approvals still gate the rest;
-// yolo = no gates (the pre-P0 behavior, now opt-in per project).
-const MODE_FLAGS: Record<string, Record<PermissionMode, string[]>> = {
-  "claude-code": {
-    // --allowedTools mcp__connectr keeps the shared-brain protocol working when everything
-    // else stays gated; without it, headless -p silently denies ticket/memory calls.
-    safe: ["--allowedTools", "mcp__connectr"],
-    auto: ["--permission-mode", "acceptEdits", "--allowedTools", "mcp__connectr"],
-    yolo: ["--dangerously-skip-permissions"],
-  },
-  codex: {
-    safe: ["--sandbox", "read-only"],
-    auto: ["--full-auto"],
-    yolo: ["--dangerously-bypass-approvals-and-sandbox"],
-  },
-  gemini: {
-    safe: ["--approval-mode", "default"],
-    auto: ["--approval-mode", "auto_edit"],
-    yolo: ["--approval-mode", "yolo"],
-  },
-};
+// Windows shims (.cmd/.bat) cannot be spawned directly and a shell string mangles free
+// text, so resolve the shim ourselves and hand cmd.exe an argv array instead.
+function resolveOnPath(bin: string): string | null {
+  return bin === "codex" ? findCodex() : whereOnPath(bin);
+}
 
 export function whereOnPath(exe: string): string | null {
   const candidates = process.platform === "win32" ? [`${exe}.exe`, `${exe}.cmd`, `${exe}`] : [exe];
@@ -77,8 +62,8 @@ export function findCodex(): string | null {
   return null;
 }
 
-export function toolKnown(tool: string): boolean {
-  return KNOWN_TOOLS.includes(tool);
+export function toolKnown(tool: string, userTools: ToolSpec[] = []): boolean {
+  return toolRegistry(userTools).some((t) => t.id === tool && t.kind === "dispatch");
 }
 
 // Model ids feed a powershell -Command string, so only plain token shapes pass.
@@ -97,28 +82,37 @@ export function buildCommand(
   cwd: string,
   model?: string,
   mode: PermissionMode = DEFAULT_PERMISSION_MODE,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  opts: { userTools?: ToolSpec[]; prompt?: string } = {}
 ): ToolCommand | null {
+  const spec = findTool(tool, opts.userTools);
+  if (!spec || spec.kind !== "dispatch" || !spec.args?.length) return null;
+
   const m = safeModel(model);
-  const modeFlags = MODE_FLAGS[tool] ?? MODE_FLAGS.gemini;
-  if (tool === "codex") {
+  const { argv, promptDelivery } = expandArgs(spec, {
+    cwd,
+    model: m ?? undefined,
+    prompt: opts.prompt ?? "",
+    mode,
+  });
+  const [bin, ...rest] = argv;
+
+  // Codex ships a real .exe we can spawn directly, and knows non-PATH install locations.
+  if (spec.bin === "codex") {
     const exe = findCodex();
+    return exe ? { command: exe, args: rest } : null;
+  }
+  if (platform !== "win32") return { command: bin, args: rest };
+
+  // On Windows these are npm .cmd shims. A joined shell string is only safe while every
+  // token is a fixed flag or a safeModel-validated id; the moment the prompt rides in
+  // argv it must go through cmd.exe as a real array or quoting will corrupt it.
+  if (promptDelivery === "arg") {
+    const exe = resolveOnPath(spec.bin ?? bin);
     if (!exe) return null;
-    return {
-      command: exe,
-      args: ["exec", "--skip-git-repo-check", ...modeFlags[mode], ...(m ? ["--model", m] : []), "--cd", cwd],
-    };
+    return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/c", exe, ...rest] };
   }
-  // claude/gemini are npm .cmd shims on Windows, so a shell wrapper is required there;
-  // every interpolated token is a fixed flag or safeModel-validated, never free text.
-  const argv =
-    tool === "claude-code"
-      ? ["claude", "-p", ...modeFlags[mode], ...(m ? ["--model", m] : [])]
-      : ["gemini", ...modeFlags[mode], ...(m ? ["-m", m] : []), "-p"];
-  if (platform === "win32") {
-    return { command: "powershell", args: ["-NoProfile", "-Command", argv.join(" ")] };
-  }
-  return { command: argv[0], args: argv.slice(1) };
+  return { command: "powershell", args: ["-NoProfile", "-Command", argv.join(" ")] };
 }
 
 export function spawnAgent(opts: SpawnOptions): ChildProcess | null {
@@ -127,7 +121,10 @@ export function spawnAgent(opts: SpawnOptions): ChildProcess | null {
   const header =
     `\n=== connectr dispatch ${opts.tool}${model ? `:${model}` : ""} mode=${mode} @ ${new Date().toISOString()} ===\n` +
     (opts.model && !model ? `ignoring invalid model '${opts.model}'\n` : "");
-  const cmd = buildCommand(opts.tool, opts.cwd, model ?? undefined, mode);
+  const cmd = buildCommand(opts.tool, opts.cwd, model ?? undefined, mode, process.platform, {
+    userTools: opts.userTools,
+    prompt: opts.prompt,
+  });
   if (!cmd) {
     fs.appendFileSync(opts.logFile, header + "codex not found: install codex CLI or fix CODEX_CLI_PATH\n");
     return null;
@@ -164,7 +161,7 @@ export function launchTicket(
   ticket: Ticket,
   cwd: string,
   runsDir: string,
-  opts: { detach?: boolean; mode?: PermissionMode; planFile?: string } = {}
+  opts: { detach?: boolean; mode?: PermissionMode; planFile?: string; userTools?: ToolSpec[] } = {}
 ): { child: ChildProcess | null; logFile: string } {
   fs.mkdirSync(runsDir, { recursive: true });
   const tool = ticket.routedTo?.tool ?? "claude-code";
@@ -177,6 +174,7 @@ export function launchTicket(
     logFile,
     mode: opts.mode,
     detach: opts.detach,
+    userTools: opts.userTools,
   });
   return { child, logFile };
 }

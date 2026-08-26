@@ -3,8 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { DEFAULT_RULES } from "./routing.js";
 import { findCodex, whereOnPath } from "./spawn.js";
+import { toolRegistry } from "./tools.js";
 
-export type ToolKind = "dispatch" | "participant";
+export type { ToolKind } from "./tools.js";
+import type { ToolKind, ToolSpec } from "./tools.js";
 
 export interface DetectedTool {
   tool: string;
@@ -14,17 +16,23 @@ export interface DetectedTool {
   targetSlugs: string[]; // init targets to wire when this tool is selected
 }
 
-export function detectTools(): DetectedTool[] {
+// Detection reads the registry, so a tool the user declared in config is detected like
+// any built-in: a dispatch tool by its binary on PATH, a participant by its config dir.
+export function detectTools(userTools: ToolSpec[] = []): DetectedTool[] {
   const home = os.homedir();
-  const hasDir = (...p: string[]) => fs.existsSync(path.join(home, ...p));
-  return [
-    { tool: "claude-code", kind: "dispatch", installed: !!whereOnPath("claude"), via: "claude on PATH", targetSlugs: ["claude", "claude-md"] },
-    { tool: "codex", kind: "dispatch", installed: !!findCodex(), via: "codex CLI", targetSlugs: ["codex"] },
-    { tool: "gemini", kind: "dispatch", installed: !!whereOnPath("gemini"), via: "gemini on PATH", targetSlugs: ["gemini-md", "gemini"] },
-    { tool: "cursor", kind: "participant", installed: hasDir(".cursor"), via: "~/.cursor", targetSlugs: ["cursor", "cursor-rules"] },
-    { tool: "kiro", kind: "participant", installed: hasDir(".kiro"), via: "~/.kiro", targetSlugs: ["kiro", "kiro-steering"] },
-    { tool: "antigravity", kind: "participant", installed: hasDir(".gemini", "antigravity-ide"), via: "~/.gemini/antigravity-ide", targetSlugs: ["antigravity"] },
-  ];
+  return toolRegistry(userTools).map((spec) => {
+    const installed =
+      spec.kind === "participant"
+        ? !!spec.homeDir && fs.existsSync(path.join(home, ...spec.homeDir))
+        : spec.bin === "codex"
+          ? !!findCodex()
+          : !!spec.bin && !!whereOnPath(spec.bin);
+    const via =
+      spec.kind === "participant"
+        ? `~/${(spec.homeDir ?? []).join("/")}`
+        : `${spec.bin} on PATH`;
+    return { tool: spec.id, kind: spec.kind, installed, via, targetSlugs: spec.targetSlugs ?? [] };
+  });
 }
 
 export interface OrchestraSuggestion {

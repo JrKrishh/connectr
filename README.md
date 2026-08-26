@@ -81,6 +81,56 @@ In the dash, `a` opens an input — `title` auto-routes, `title @codex:gpt-5-cod
 and model manually. `r` shows the dispatch plan and permission mode; pressing `r` again confirms.
 Agents launch detached, so they keep working after you quit the dash.
 
+## Add another coding tool
+
+ConnectR's tools are data, not code. The three below ship built in; anything else you run
+is a JSON object in `.connectr/config.json` under `tools` — no fork, no PR, no rebuild:
+
+```json
+{
+  "tools": [
+    {
+      "id": "opencode",
+      "kind": "dispatch",
+      "bin": "opencode",
+      "args": ["opencode", "run", "{mode}", "{prompt}"],
+      "modelArgs": ["--model", "{model}"],
+      "modes": { "safe": [], "auto": [], "yolo": ["--yolo"] },
+      "prompt": "arg"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | what you route to: `@opencode`, `--tool opencode` |
+| `kind` | `dispatch` (ConnectR launches it) or `participant` (it joins the brain over MCP and a human drives it) |
+| `bin` | executable to find on PATH |
+| `args` | the command template. `{cwd}` `{model}` `{prompt}` `{mode}` are substituted; `{mode}` is where the permission flags land |
+| `modelArgs` | added only when a model is set — this is what makes model-level routing work for your tool |
+| `modes` | flags per permission profile; leave `safe`/`auto` empty if the tool has no gating |
+| `prompt` | `stdin` (default) pipes the task to the process; `arg` puts it in `{prompt}` |
+
+A `participant` entry needs only `id`, `kind` and `homeDir` (the folder whose presence
+means it's installed) — it gets wired to the shared brain and shows up in the orchestra.
+
+Giving an entry the `id` of a built-in **replaces** it, which is how you change flags for
+a tool ConnectR already knows without waiting for a release.
+
+Verify a new tool before trusting it with real work:
+
+```bash
+connectr task add "cli/script: hello world" --tool opencode
+connectr run --dry-run          # confirm it routes
+connectr run                    # then read .connectr/runs/*.log
+```
+
+The first line of every run log is the exact command ConnectR spawned, so a wrong flag is
+one look away. Only `claude-code`, `codex` and `gemini` are verified against real installs
+here — treat any preset you find (including the one above) as a starting point to check on
+your own machine.
+
 ## Dispatch permission modes
 
 Dispatched agents run under a per-project profile (default **auto** — never yolo unless you say so):
@@ -110,10 +160,21 @@ Restart your coding tools so they pick up the new MCP config. Then just tell any
 | `whoami` | register identity; see live peers + board summary |
 | `remember` / `recall` | shared memory across all tools: `kind` = fact / decision / lesson (+`fix`), deduped |
 
-Routing is **outcome-learned**: every closed ticket records which tool completed, failed, or
-lost which category of work. With 3+ outcomes in a category, a tool that outperforms the
-static rule takes it over — automatically, with the evidence shown (`connectr routes`).
-Your board history decides which tool is best at what, in *your* projects.
+Routing is **outcome-learned**, down to the model. Every closed ticket records which tool —
+and which model, since agents report theirs — completed, failed, or lost which category of
+work. With 3+ outcomes in a category, a target that outperforms the static rule takes it
+over, and that can be another tool *or another model of the same tool*:
+
+```
+◆ docs|readme|research|…
+    rule says gemini · outcomes: gemini:gemini-2.5-pro 3w/0l · gemini:gemini-2.5-flash 1w/1l
+    pick: gemini:gemini-2.5-pro  << LEARNED override
+```
+
+Two guards keep it honest: an override needs 3+ outcomes, and it needs the rule's own tool
+to have actually been tried — otherwise "never tried" would read as "worse than whoever ran
+first" and the router would calcify. `connectr routes` shows the whole table with its
+evidence. Your board history decides what's best at what, in *your* projects.
 | `ticket_create` / `ticket_claim` / `ticket_update` / `ticket_close` | work coordination; claim-before-build |
 | `board_view` | everything at a glance |
 | `claim_files` / `release_files` | advisory locks, auto-expire after 2h |

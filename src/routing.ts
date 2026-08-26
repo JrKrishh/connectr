@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeToolSpec, type ToolSpec } from "./tools.js";
 
 export interface RoutingRule {
   match: string;
   tool: string;
 }
 
+/** Ids that always exist; the live list comes from the tool registry (see src/tools.ts). */
 export const KNOWN_TOOLS = ["claude-code", "codex", "gemini"];
 
 export interface ParsedTaskInput {
@@ -40,6 +42,7 @@ export interface ConnectrConfig {
   permissionMode: PermissionMode;
   tools?: string[]; // orchestra selected at `connectr new` (informational)
   planFile?: string; // project brief injected into dispatched agents' prompts
+  toolSpecs?: ToolSpec[]; // extra coding tools declared by the user (config "tools" array of objects)
 }
 
 export const DEFAULT_RULES: RoutingRule[] = [
@@ -65,7 +68,12 @@ export function loadConfig(root: string): ConnectrConfig {
           defaultTool: typeof raw?.routing?.defaultTool === "string" ? raw.routing.defaultTool : DEFAULT_TOOL,
         },
         permissionMode: PERMISSION_MODES.includes(raw?.permissionMode) ? raw.permissionMode : DEFAULT_PERMISSION_MODE,
+        // "tools" holds either selected ids (strings) or full tool declarations (objects),
+        // so one key covers both "which tools this project uses" and "here's a new tool".
         ...(Array.isArray(raw?.tools) ? { tools: raw.tools.filter((t: unknown) => typeof t === "string") } : {}),
+        ...(Array.isArray(raw?.tools)
+          ? { toolSpecs: raw.tools.map(normalizeToolSpec).filter((t: ToolSpec | null): t is ToolSpec => t !== null) }
+          : {}),
         ...(typeof raw?.planFile === "string" ? { planFile: raw.planFile } : {}),
       };
     } catch {
