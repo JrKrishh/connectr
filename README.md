@@ -53,6 +53,8 @@ connectr init --global # also wires Codex (~/.codex/config.toml),
                        # Gemini CLI (~/.gemini/settings.json),
                        # Antigravity (~/.gemini/antigravity-ide/mcp_config.json)
 connectr doctor        # verify wiring
+connectr plan "add JWT auth, tests for it, and update the docs"   # describe an outcome
+connectr plan "..." --run                                # ...and dispatch what it plans
 connectr task add "fix the auth flow"                    # auto-routed to the best tool
 connectr task add "migrate db" --tool codex --model gpt-5-codex   # manual tool + model
 connectr run           # dispatch open tasks to their routed tools, in parallel
@@ -66,6 +68,14 @@ kanban columns, live agents, shared memory with lesson badges, file claims, and 
 tails — updated live over SSE. Add tasks (same `@tool:model` syntax) and dispatch open
 tickets from the browser; dispatch always shows the plan and permission mode first and
 asks you to confirm.
+
+`connectr plan` is the front door: you describe an outcome, and ConnectR parks it on the
+board as a planner ticket and dispatches it. The agent that claims it reads your repo,
+the board and the shared memory, then creates the real tickets — titled so they route
+well, with contracts published for whichever ticket another one will build against. You
+never write a ticket by hand. In the web dashboard the same thing is the **Plan it**
+button (Enter); **Add as one task** (shift+Enter) is the escape hatch for when you already
+know exactly what you want.
 
 In the dash, `a` opens an input — `title` auto-routes, `title @codex:gpt-5-codex` assigns tool
 and model manually. `r` shows the dispatch plan and permission mode; pressing `r` again confirms.

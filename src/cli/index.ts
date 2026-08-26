@@ -5,7 +5,8 @@ import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
 import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
-import { planOpenTickets } from "../host.js";
+import { planIntent, planOpenTickets } from "../host.js";
+import { plannerTicket } from "../planner.js";
 import { MIN_EVIDENCE, learnRoutes, resolveToolSmart } from "../learn.js";
 import { launchTicket, toolKnown } from "../spawn.js";
 import type { Ticket } from "../types.js";
@@ -178,19 +179,19 @@ program
     // 6. seed the board: the first agent decomposes the plan into tickets
     const store = new Store(root);
     const dispatchTool = suggestions.find((s) => s.kind === "dispatch" && selected.includes(s.tool))?.tool;
+    const seed = plannerTicket(`Build what ${"PLAN.md"} describes.`, { planFile: "PLAN.md" });
     const seeded = await store.mutate((d): string | null => {
       if (d.tickets.length > 0) return null;
       const t: Ticket = {
         id: nextId("t", d.tickets),
-        title: "Decompose PLAN.md into tickets on the board",
-        desc:
-          "Read PLAN.md. For each concrete work item, call ticket_create with a clear title and acceptance criteria. Use words like backend/api, cli/script, or docs in titles so auto-routing lands well. Do not build anything in this ticket - only create the others, then close this one.",
+        title: seed.title,
+        desc: seed.desc,
         status: "open",
         notes: [],
         createdBy: "connectr-new",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        routedTo: { tool: dispatchTool ?? "claude-code", auto: true },
+        routedTo: { tool: dispatchTool ?? "claude-code", auto: true, via: "default" },
       };
       d.tickets.push(t);
       return t.id;
@@ -200,7 +201,7 @@ program
       [
         "",
         `wired: ${selected.join(", ")}   mode: ${opts.mode}`,
-        seeded ? `board: seeded ${seeded} -> "${"Decompose PLAN.md into tickets"}" (routed to ${dispatchTool ?? "claude-code"})` : "board: existing tickets kept",
+        seeded ? `board: seeded ${seeded} "${seed.title}" (routed to ${dispatchTool ?? "claude-code"})` : "board: existing tickets kept",
         "",
         "next:",
         planCreated ? "  1. fill in PLAN.md" : "  1. review PLAN.md",
@@ -210,6 +211,71 @@ program
         "  restart IDE tools (Cursor/Kiro/Antigravity) so they pick up the MCP config",
       ].join("\n")
     );
+  });
+
+program
+  .command("plan")
+  .description("Describe what you want; ConnectR breaks it into routed tickets on the board")
+  .argument("<intent>", "what you want built, in plain language")
+  .option("--tool <name>", "which tool does the planning (default: the project's default tool)")
+  .option("--run", "dispatch the tickets it creates as soon as planning finishes")
+  .action(async (intent: string, opts: { tool?: string; run?: boolean }) => {
+    if (opts.tool && !toolKnown(opts.tool)) {
+      console.error(`unknown tool '${opts.tool}' - use claude-code, codex or gemini`);
+      process.exitCode = 1;
+      return;
+    }
+    const store = new Store();
+    const config = loadConfig(process.cwd());
+    const result = await planIntent(store, config, intent, "host", { tool: opts.tool });
+    if (result.error) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+    const planner = result.ticket!;
+    const before = new Set(store.read().tickets.map((t) => t.id));
+    console.log(`planning with ${planner.routedTo!.tool} (${planner.id}) - mode ${config.permissionMode}\n`);
+
+    const runsDir = path.join(store.dir, "runs");
+    const { child, logFile } = launchTicket(planner, process.cwd(), runsDir, {
+      mode: config.permissionMode,
+      planFile: config.planFile,
+    });
+    if (!child) {
+      console.error(`${planner.routedTo!.tool} not found - install it or pass --tool`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`log: ${logFile}`);
+    await new Promise((r) => child.on("close", r));
+
+    // Tickets created through MCP carry no routing yet - resolve it now so the summary
+    // shows which tool each one is headed for, not "unrouted".
+    await planOpenTickets(new Store(), config);
+    const created = new Store().read().tickets.filter((t) => !before.has(t.id));
+    if (created.length === 0) {
+      console.log("\nno tickets were created - read the log above to see what the planner did");
+      return;
+    }
+    console.log(`\n${created.length} ticket(s) created:`);
+    for (const t of created) {
+      const rt = t.routedTo;
+      console.log(`  ${t.id.padEnd(5)} -> ${(rt ? rt.tool + (rt.model ? `:${rt.model}` : "") : "unrouted").padEnd(14)} ${t.title}`);
+    }
+    console.log(opts.run ? "\ndispatching..." : `\nrun them: connectr run   (or connectr ui to watch)`);
+    if (opts.run) {
+      const plan = await planOpenTickets(new Store(), config);
+      for (const t of plan) {
+        const { child: c, logFile: lf } = launchTicket(t, process.cwd(), runsDir, {
+          mode: config.permissionMode,
+          planFile: config.planFile,
+          detach: true,
+        });
+        console.log(c ? `launched ${t.id} -> ${t.routedTo!.tool} (pid ${c.pid}, log ${lf})` : `${t.id}: ${t.routedTo!.tool} NOT FOUND`);
+      }
+      console.log("\nagents are running detached - watch them with: connectr ui");
+    }
   });
 
 const taskCmd = program

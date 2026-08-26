@@ -283,14 +283,16 @@ export const UI_HTML = `<!doctype html>
           <label class="field">
             <span class="pfx" id="pfx"></span>
             <input id="task" autocomplete="off" spellcheck="false"
-              placeholder="Describe a task - it routes to the right tool automatically">
+              placeholder="Describe what you want built - ConnectR breaks it into tasks">
           </label>
-          <button class="btn primary" id="addBtn">Add task</button>
+          <button class="btn primary" id="planBtn">Plan it</button>
+          <button class="btn" id="addBtn">Add as one task</button>
           <button class="btn" id="dispatchBtn">Dispatch</button>
         </div>
         <div class="hint">
-          <span>Assign manually with <code>@codex</code> or <code>@gemini:gemini-2.5-pro</code></span>
-          <span><span class="kbd">/</span> focus &middot; <span class="kbd">d</span> dispatch &middot; <span class="kbd">esc</span> back</span>
+          <span><b>Plan it</b> sends your description to a planner agent that fills the board.
+            <b>Add as one task</b> creates exactly what you typed - assign it with <code>@codex</code> or <code>@gemini:gemini-2.5-pro</code>.</span>
+          <span><span class="kbd">/</span> focus &middot; <span class="kbd">enter</span> plan &middot; <span class="kbd">d</span> dispatch &middot; <span class="kbd">esc</span> back</span>
         </div>
       </div>
     </div>
@@ -316,6 +318,7 @@ var I={
  plus:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5.5v13M5.5 12h13"/></svg>',
  chev:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
  warn:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5L21 19H3z"/><path d="M12 10v3.6M12 16.4v.1"/></svg>',
+ spark:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>',
  idle:'<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6.5" r="2.4"/><circle cx="18" cy="6.5" r="2.4"/><circle cx="12" cy="17.5" r="2.4"/><path d="M8.4 6.5h7.2M7.3 8.6l3.4 6.8M16.7 8.6l-3.4 6.8"/></svg>'
 };
 
@@ -542,6 +545,22 @@ function addTask(){
       refresh();
     }).catch(function(){toast("could not reach the connectr server",true);});
 }
+function planIt(){
+  var input=el("task"), v=input.value.trim();
+  if(!v){input.focus();return;}
+  toast("planning \\u2014 an agent is breaking this into tasks\\u2026");
+  fetch("/api/plan",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({intent:v})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){toast(d.error,true);return;}
+      if(!d.launch||!d.launch.ok){toast(d.ticket.routedTo.tool+" not found - cannot plan",true);refresh();return;}
+      input.value="";
+      toast("planning as "+d.ticket.id+" on "+d.ticket.routedTo.tool+" - tickets will appear as it works");
+      select(d.ticket.id);
+      refresh();
+    }).catch(function(){toast("could not reach the connectr server",true);});
+}
+
 function armDispatch(){
   fetch("/api/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({dry:true})})
     .then(function(r){return r.json();})
@@ -578,14 +597,17 @@ function doDispatch(){
 /* ---------- wiring ---------- */
 el("mark").innerHTML=I.logo;
 el("pfx").innerHTML=I.chev;
-el("addBtn").innerHTML=I.plus+"Add task";
+el("planBtn").innerHTML=I.spark+"Plan it";
+el("addBtn").innerHTML=I.plus+"Add as one task";
 el("dispatchBtn").innerHTML=I.play+"Dispatch";
+el("planBtn").onclick=planIt;
 el("addBtn").onclick=addTask;
 el("dispatchBtn").onclick=armDispatch;
 el("confirmGo").onclick=doDispatch;
 el("confirmNo").onclick=function(){el("confirm").style.display="none";pending=null;toast("dispatch cancelled");};
 el("task").addEventListener("keydown",function(e){
-  if(e.key==="Enter")addTask();
+  // Enter is the conversational path; shift+enter is the literal one.
+  if(e.key==="Enter")e.shiftKey?addTask():planIt();
   if(e.key==="Escape")el("task").blur();
 });
 document.addEventListener("click",function(e){

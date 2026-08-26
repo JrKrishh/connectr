@@ -76,6 +76,29 @@ describe("connectr ui server", () => {
     expect(plan.plan[0].tool).toBe("gemini");
   });
 
+  it("rejects an empty plan request", async () => {
+    const res = await fetch(base + "/api/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "  " }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("empty");
+  });
+
+  it("creates a planner ticket carrying the intent", async () => {
+    const res = await fetch(base + "/api/plan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent: "add a settings page" }),
+    });
+    expect(res.status).toBe(200);
+    const { ticket } = await res.json();
+    expect(ticket.title).toBe("Plan: add a settings page");
+    expect(ticket.desc).toContain("add a settings page");
+    expect(ticket.routedTo.via).toBe("default");
+  });
+
   it("blocks log path traversal", async () => {
     const res = await fetch(base + "/api/log?file=..%2F..%2Fstore.json");
     expect(res.status).toBe(404);

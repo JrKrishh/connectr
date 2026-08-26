@@ -1,5 +1,6 @@
 import path from "node:path";
 import { resolveToolSmart } from "./learn.js";
+import { plannerTicket } from "./planner.js";
 import { parseTaskInput, type ConnectrConfig } from "./routing.js";
 import { launchTicket } from "./spawn.js";
 import { Store, nextId } from "./store.js";
@@ -33,6 +34,38 @@ export async function addTaskFromInput(store: Store, config: ConnectrConfig, raw
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       routedTo,
+    };
+    d.tickets.push(t);
+    return t;
+  });
+  return { ticket };
+}
+
+// The conversational front door: park the intent on the board as a planner ticket. It is
+// dispatched like any other ticket; the agent that claims it fills the board with the
+// real work. Planning is reasoning, so it goes to the project's default tool rather than
+// whatever the intent's wording happens to match.
+export async function planIntent(
+  store: Store,
+  config: ConnectrConfig,
+  intent: string,
+  createdBy: string,
+  opts: { tool?: string } = {}
+): Promise<AddTaskResult> {
+  if (!intent.trim()) return { error: "say what you want built - the request is empty" };
+  const { title, desc } = plannerTicket(intent, { planFile: config.planFile });
+  const tool = opts.tool ?? config.routing.defaultTool;
+  const ticket = await store.mutate((d): Ticket => {
+    const t: Ticket = {
+      id: nextId("t", d.tickets),
+      title,
+      desc,
+      status: "open",
+      notes: [],
+      createdBy,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      routedTo: { tool, auto: !opts.tool, via: opts.tool ? "manual" : "default", reason: "planning goes to the project's reasoning tool" },
     };
     d.tickets.push(t);
     return t;

@@ -1,7 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { addTaskFromInput, launchPlanned, planOpenTickets } from "../host.js";
+import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets } from "../host.js";
 import { factKind } from "../memory.js";
 import { loadConfig } from "../routing.js";
 import { Store, liveAgentIds } from "../store.js";
@@ -135,6 +135,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readBody(req);
     const result = await addTaskFromInput(new Store(), loadConfig(process.cwd()), String(body.input ?? ""), "web-host");
     json(res, result.error ? 400 : 200, result);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/plan") {
+    const body = await readBody(req);
+    const store = new Store();
+    const config = loadConfig(process.cwd());
+    const result = await planIntent(store, config, String(body.intent ?? ""), "web-host");
+    if (result.error) {
+      json(res, 400, result);
+      return;
+    }
+    // Planning is a normal dispatch: the planner ticket goes out detached and the board
+    // shows it working, so the page needs no special "thinking" state.
+    const [launch] = launchPlanned([result.ticket!], process.cwd(), store.dir, config, true);
+    if (launch.ok) dispatched.add(launch.id);
+    json(res, 200, { ticket: result.ticket, launch });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/dispatch") {
