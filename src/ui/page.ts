@@ -151,7 +151,9 @@ function renderThread(s){
   if(!t){box.style.display="none";return;}
   box.style.display="block";
   var route=t.routedTo?esc(t.routedTo.tool)+(t.routedTo.model?":"+esc(t.routedTo.model):""):"unrouted";
+  if(t.routedTo&&t.routedTo.via)route+=" ["+esc(t.routedTo.via)+"]";
   var html='<div class="th-head"><span class="tid">'+esc(t.id)+'</span> <b>'+esc(t.title)+'</b>  <span class="route">['+esc(t.status)+(t.resolution?" &middot; "+esc(t.resolution):"")+'] &rarr; '+route+(t.owner?" &middot; @"+esc(t.owner):"")+'</span></div>';
+  if(t.routedTo&&t.routedTo.reason)html+='<div class="th-desc">routing: '+esc(t.routedTo.reason)+"</div>";
   if(t.desc)html+='<div class="th-desc">'+esc(t.desc)+"</div>";
   if(t.notes&&t.notes.length){
     html+='<div class="th-notes">'+t.notes.map(function(n){

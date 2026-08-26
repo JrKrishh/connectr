@@ -47,6 +47,8 @@ export interface RoutedTo {
   tool: string;
   model?: string;
   auto: boolean;
+  via?: "manual" | "rule" | "learned" | "default";
+  reason?: string; // why this tool: matched rule / learned override evidence
 }
 
 export interface FileClaim {

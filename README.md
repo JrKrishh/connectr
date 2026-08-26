@@ -56,6 +56,7 @@ connectr doctor        # verify wiring
 connectr task add "fix the auth flow"                    # auto-routed to the best tool
 connectr task add "migrate db" --tool codex --model gpt-5-codex   # manual tool + model
 connectr run           # dispatch open tasks to their routed tools, in parallel
+connectr routes        # learned routing: how past outcomes reshape where tasks go
 connectr dash          # live TUI host: a add task · r dispatch · l tail run log · q quit
 connectr ui            # the same host as a local web dashboard (http://127.0.0.1:4270)
 ```
@@ -98,6 +99,11 @@ Restart your coding tools so they pick up the new MCP config. Then just tell any
 |---|---|
 | `whoami` | register identity; see live peers + board summary |
 | `remember` / `recall` | shared memory across all tools: `kind` = fact / decision / lesson (+`fix`), deduped |
+
+Routing is **outcome-learned**: every closed ticket records which tool completed, failed, or
+lost which category of work. With 3+ outcomes in a category, a tool that outperforms the
+static rule takes it over — automatically, with the evidence shown (`connectr routes`).
+Your board history decides which tool is best at what, in *your* projects.
 | `ticket_create` / `ticket_claim` / `ticket_update` / `ticket_close` | work coordination; claim-before-build |
 | `board_view` | everything at a glance |
 | `claim_files` / `release_files` | advisory locks, auto-expire after 2h |

@@ -3,9 +3,10 @@ import { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
-import { PERMISSION_MODES, effectiveRules, loadConfig, resolveTool, saveConfig, type PermissionMode } from "../routing.js";
+import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
 import { planOpenTickets } from "../host.js";
+import { MIN_EVIDENCE, learnRoutes, resolveToolSmart } from "../learn.js";
 import { launchTicket, toolKnown } from "../spawn.js";
 import type { Ticket } from "../types.js";
 import { ALL_TARGETS, applyEdit, hasConnectr, type ToolTarget } from "./targets.js";
@@ -232,8 +233,13 @@ taskCmd
     const store = new Store();
     const config = loadConfig(process.cwd());
     const manual = !!opts.tool;
-    const tool = opts.tool ?? resolveTool(`${title} ${opts.desc ?? ""}`, config);
     const ticket = await store.mutate((d): Ticket => {
+      const routedTo = manual
+        ? { tool: opts.tool!, model: opts.model, auto: false, via: "manual" as const }
+        : (() => {
+            const smart = resolveToolSmart(`${title} ${opts.desc ?? ""}`, d, config);
+            return { tool: smart.tool, model: opts.model, auto: true, via: smart.via, reason: smart.reason };
+          })();
       const t: Ticket = {
         id: nextId("t", d.tickets),
         title,
@@ -244,29 +250,16 @@ taskCmd
         createdBy: "host",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        routedTo: { tool, model: opts.model, auto: !manual },
+        routedTo,
       };
       d.tickets.push(t);
       return t;
     });
-    console.log(`ticket ${ticket.id} -> ${tool}${opts.model ? ` (${opts.model})` : ""} [${manual ? "manual" : "auto-routed"}]`);
-    if (!manual) {
-      console.log(`  matched rule: ${effectiveRuleFor(`${title} ${opts.desc ?? ""}`, config) ?? "default"}`);
-    }
+    const rt = ticket.routedTo!;
+    console.log(`ticket ${ticket.id} -> ${rt.tool}${opts.model ? ` (${opts.model})` : ""} [${manual ? "manual" : `auto: ${rt.via}`}]`);
+    if (!manual && rt.reason) console.log(`  ${rt.reason}`);
     console.log(`  run: connectr run --id ${ticket.id}   (or connectr run for all open tasks)`);
   });
-
-function effectiveRuleFor(text: string, config: ReturnType<typeof loadConfig>): string | null {
-  const hay = text.toLowerCase();
-  for (const rule of effectiveRules(config)) {
-    try {
-      if (new RegExp(rule.match, "i").test(hay)) return rule.match;
-    } catch {
-      /* skip */
-    }
-  }
-  return null;
-}
 
 program
   .command("run")
@@ -329,6 +322,32 @@ program
     console.log(`tickets: ${d.tickets.filter((t) => t.status !== "closed").length} open / ${d.tickets.length} total`);
     console.log(`facts : ${d.facts.length}`);
     console.log(`claims: ${d.claims.length}`);
+  });
+
+program
+  .command("routes")
+  .description("Show learned routing: how past outcomes reshape where new tasks go")
+  .action(() => {
+    const store = new Store();
+    const config = loadConfig(process.cwd());
+    const d = store.read();
+    const closed = d.tickets.filter((t) => t.status === "closed").length;
+    const table = learnRoutes(d, config);
+    console.log(`learned routing from ${closed} closed ticket(s) - an override needs ${MIN_EVIDENCE}+ outcomes in a category\n`);
+    if (table.size === 0) {
+      console.log("no outcomes yet - close some tickets and come back");
+      return;
+    }
+    for (const c of table.values()) {
+      const terms = c.category.split("|");
+      const label = c.category === "default" ? "default" : terms.slice(0, 3).join("|") + (terms.length > 3 ? "|…" : "");
+      const stats = Object.entries(c.stats)
+        .map(([tool, s]) => `${tool} ${s.wins}w/${s.losses}l`)
+        .join(" · ");
+      console.log(`${c.learned ? "◆" : "·"} ${label}`);
+      console.log(`    rule says ${c.ruleTool} · outcomes: ${stats || "none"}`);
+      console.log(`    pick: ${c.pick}${c.learned ? "  << LEARNED override" : ""} (${c.reason})`);
+    }
   });
 
 program

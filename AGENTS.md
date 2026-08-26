@@ -22,6 +22,7 @@ race test); `npm run smoke` = two real MCP client sessions over stdio against th
 - `src/memory.ts` — shared-brain helpers: `searchFacts` (kind-aware scoring), `findDuplicate` (near-dup rejection), `recentLessons`
 - `src/detect.ts` — tool detection (dispatch CLIs on PATH, participant IDEs by config dir) + `suggestOrchestra` (rank tools for a plan via routing-rule hits; generic terms like "build" ignored at plan scale) + the PLAN.md template
 - `src/host.ts` — shared host actions used by CLI run, TUI dash and web UI: `addTaskFromInput` (parse + route + create), `planOpenTickets` (route-and-copy open set, include/exclude), `launchPlanned`
+- `src/learn.ts` — outcome-learned routing: `learnRoutes` scores tools per category from closed tickets (completions = wins, takeovers + routing-misses = losses, Laplace-smoothed), `resolveToolSmart` overrides the static rule at 3+ outcomes; surfaced via `connectr routes` and `routedTo.via/reason`
 - `src/ui/server.ts` — `connectr ui` HTTP server (node:http, 127.0.0.1 only, zero deps): /api/state, /api/events (SSE, 1s change-push), /api/task, /api/dispatch (dry=plan preview), /api/log (basename-guarded tails)
 - `src/ui/page.ts` — the whole dashboard as one embedded HTML page (no build step, no CDN); board columns, agents, memory, claims, run tails, add + confirm-dispatch
 - `src/server/index.ts` — the MCP server (stdio): whoami, remember/recall, ticket_create/claim/update/close, board_view, claim_files/release_files

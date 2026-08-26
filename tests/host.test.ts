@@ -16,14 +16,14 @@ describe("addTaskFromInput", () => {
     const { store, root } = scratch();
     const r = await addTaskFromInput(store, loadConfig(root), "write project docs", "test-host");
     expect(r.error).toBeUndefined();
-    expect(r.ticket!.routedTo).toEqual({ tool: "gemini", model: undefined, auto: true });
+    expect(r.ticket!.routedTo).toMatchObject({ tool: "gemini", auto: true, via: "rule" });
     expect(store.read().tickets).toHaveLength(1);
   });
 
   it("honors manual @tool:model assignment", async () => {
     const { store, root } = scratch();
     const r = await addTaskFromInput(store, loadConfig(root), "migrate db @codex:gpt-5-codex", "test-host");
-    expect(r.ticket!.routedTo).toEqual({ tool: "codex", model: "gpt-5-codex", auto: false });
+    expect(r.ticket!.routedTo).toEqual({ tool: "codex", model: "gpt-5-codex", auto: false, via: "manual" });
   });
 
   it("rejects unknown tools and empty titles without writing", async () => {

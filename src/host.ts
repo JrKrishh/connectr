@@ -1,5 +1,6 @@
 import path from "node:path";
-import { parseTaskInput, resolveTool, type ConnectrConfig } from "./routing.js";
+import { resolveToolSmart } from "./learn.js";
+import { parseTaskInput, type ConnectrConfig } from "./routing.js";
 import { launchTicket } from "./spawn.js";
 import { Store, nextId } from "./store.js";
 import type { Ticket } from "./types.js";
@@ -15,8 +16,13 @@ export async function addTaskFromInput(store: Store, config: ConnectrConfig, raw
   const parsed = parseTaskInput(raw);
   if (parsed.error) return { error: parsed.error };
   if (!parsed.title) return { error: "empty title - nothing created" };
-  const tool = parsed.tool ?? resolveTool(parsed.title, config);
   const ticket = await store.mutate((d): Ticket => {
+    const routedTo = parsed.tool
+      ? { tool: parsed.tool, model: parsed.model, auto: false, via: "manual" as const }
+      : (() => {
+          const smart = resolveToolSmart(parsed.title, d, config);
+          return { tool: smart.tool, model: parsed.model, auto: true, via: smart.via, reason: smart.reason };
+        })();
     const t: Ticket = {
       id: nextId("t", d.tickets),
       title: parsed.title,
@@ -26,7 +32,7 @@ export async function addTaskFromInput(store: Store, config: ConnectrConfig, raw
       createdBy,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      routedTo: { tool, model: parsed.model, auto: !parsed.tool },
+      routedTo,
     };
     d.tickets.push(t);
     return t;
@@ -47,7 +53,10 @@ export async function planOpenTickets(
       (t) => t.status === "open" && !exclude.has(t.id) && (!include || include.includes(t.id))
     );
     for (const t of open) {
-      if (!t.routedTo) t.routedTo = { tool: resolveTool(`${t.title} ${t.desc}`, config), auto: true };
+      if (!t.routedTo) {
+        const smart = resolveToolSmart(`${t.title} ${t.desc}`, d, config);
+        t.routedTo = { tool: smart.tool, auto: true, via: smart.via, reason: smart.reason };
+      }
     }
     return open.map((t) => ({ ...t }));
   });
