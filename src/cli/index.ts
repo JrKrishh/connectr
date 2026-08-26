@@ -5,6 +5,7 @@ import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
 import { PERMISSION_MODES, effectiveRules, loadConfig, resolveTool, saveConfig, type PermissionMode } from "../routing.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
+import { planOpenTickets } from "../host.js";
 import { launchTicket, toolKnown } from "../spawn.js";
 import type { Ticket } from "../types.js";
 import { ALL_TARGETS, applyEdit, hasConnectr, type ToolTarget } from "./targets.js";
@@ -276,26 +277,15 @@ program
     const store = new Store();
     const config = loadConfig(process.cwd());
     const wanted = opts.id ? opts.id.split(",").map((s) => s.trim()) : null;
-    const d = store.read();
-    const open = d.tickets.filter((t) => t.status === "open" && (!wanted || wanted.includes(t.id)));
-    if (open.length === 0) {
+    const plan = await planOpenTickets(store, config, { include: wanted });
+    if (plan.length === 0) {
       console.log("no open tickets to dispatch");
       return;
     }
-    const plan = await store.mutate((data) => {
-      const out: { ticket: Ticket; tool: string }[] = [];
-      for (const t of open) {
-        const fresh = data.tickets.find((x) => x.id === t.id)!;
-        if (!fresh.routedTo) {
-          fresh.routedTo = { tool: resolveTool(`${fresh.title} ${fresh.desc}`, config), auto: true };
-        }
-        out.push({ ticket: fresh, tool: fresh.routedTo.tool });
-      }
-      return out;
-    });
-    for (const p of plan) {
-      const model = p.ticket.routedTo?.model;
-      console.log(`t${p.ticket.id.slice(1).padEnd(3)} -> ${(p.tool + (model ? `:${model}` : "")).padEnd(24)} ${p.ticket.title}`);
+    for (const t of plan) {
+      const tool = t.routedTo!.tool;
+      const model = t.routedTo!.model;
+      console.log(`t${t.id.slice(1).padEnd(3)} -> ${(tool + (model ? `:${model}` : "")).padEnd(24)} ${t.title}`);
     }
     console.log(`dispatch permission mode: ${config.permissionMode}`);
     if (opts.dryRun) {
@@ -303,17 +293,18 @@ program
       return;
     }
     const runsDir = path.join(store.dir, "runs");
-    const children = plan.map((p) => {
-      const { child, logFile } = launchTicket(p.ticket, process.cwd(), runsDir, {
+    const children = plan.map((t) => {
+      const tool = t.routedTo!.tool;
+      const { child, logFile } = launchTicket(t, process.cwd(), runsDir, {
         mode: config.permissionMode,
         planFile: config.planFile,
       });
       if (!child) {
-        console.log(`${p.ticket.id}: ${p.tool} NOT FOUND - skipped`);
+        console.log(`${t.id}: ${tool} NOT FOUND - skipped`);
         return null;
       }
-      const model = p.ticket.routedTo?.model;
-      console.log(`launched ${p.ticket.id} -> ${p.tool}${model ? ` (${model})` : ""} (pid ${child.pid}, log ${logFile})`);
+      const model = t.routedTo!.model;
+      console.log(`launched ${t.id} -> ${tool}${model ? ` (${model})` : ""} (pid ${child.pid}, log ${logFile})`);
       return child;
     });
     await Promise.all(children.map((c) => (c ? new Promise((r) => c.on("close", r)) : Promise.resolve())));
@@ -393,6 +384,23 @@ program
   .action(async () => {
     const { runDash } = await import("../tui/dash.js");
     runDash();
+  });
+
+program
+  .command("ui")
+  .description("Local web dashboard: board, agents, memory, run logs - add tasks and dispatch from the browser")
+  .option("--port <n>", "port to listen on (bound to 127.0.0.1 only)", "4270")
+  .action(async (opts: { port: string }) => {
+    const { startUi } = await import("../ui/server.js");
+    const port = Number(opts.port);
+    const server = startUi(port);
+    server.on("listening", () => {
+      console.log(`connectr ui -> http://127.0.0.1:${port}   (Ctrl+C to stop)`);
+    });
+    server.on("error", (e) => {
+      console.error(`ui failed to start: ${(e as Error).message}`);
+      process.exit(1);
+    });
   });
 
 program.parseAsync(process.argv).catch((e) => {

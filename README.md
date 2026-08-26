@@ -57,7 +57,14 @@ connectr task add "fix the auth flow"                    # auto-routed to the be
 connectr task add "migrate db" --tool codex --model gpt-5-codex   # manual tool + model
 connectr run           # dispatch open tasks to their routed tools, in parallel
 connectr dash          # live TUI host: a add task · r dispatch · l tail run log · q quit
+connectr ui            # the same host as a local web dashboard (http://127.0.0.1:4270)
 ```
+
+`connectr ui` serves a zero-dependency dashboard bound to localhost: the ticket board as
+kanban columns, live agents, shared memory with lesson badges, file claims, and run-log
+tails — updated live over SSE. Add tasks (same `@tool:model` syntax) and dispatch open
+tickets from the browser; dispatch always shows the plan and permission mode first and
+asks you to confirm.
 
 In the dash, `a` opens an input — `title` auto-routes, `title @codex:gpt-5-codex` assigns tool
 and model manually. `r` shows the dispatch plan and permission mode; pressing `r` again confirms.

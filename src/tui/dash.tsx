@@ -2,10 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput } from "ink";
 import fs from "node:fs";
 import path from "node:path";
-import { Store, liveAgentIds, nextId } from "../store.js";
+import { Store, liveAgentIds } from "../store.js";
+import { addTaskFromInput, launchPlanned, planOpenTickets } from "../host.js";
 import { factKind } from "../memory.js";
-import { loadConfig, parseTaskInput, resolveTool, type PermissionMode } from "../routing.js";
-import { launchTicket } from "../spawn.js";
+import { loadConfig, type ConnectrConfig } from "../routing.js";
 import type { StoreData, Ticket } from "../types.js";
 
 function useStoreData(): StoreData | null {
@@ -83,7 +83,7 @@ function Dashboard(): React.JSX.Element {
   const [message, setMessage] = useState("");
   const [showLog, setShowLog] = useState(false);
   const [logTail, setLogTail] = useState<LogTail | null>(null);
-  const [pending, setPending] = useState<{ plan: Ticket[]; mode: PermissionMode; planFile?: string } | null>(null);
+  const [pending, setPending] = useState<{ plan: Ticket[]; config: ConnectrConfig } | null>(null);
   const dispatchedRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -96,69 +96,36 @@ function Dashboard(): React.JSX.Element {
   }, [showLog]);
 
   const addTask = async (raw: string): Promise<void> => {
-    const parsed = parseTaskInput(raw);
-    if (parsed.error) {
-      setMessage(parsed.error);
+    const result = await addTaskFromInput(new Store(), loadConfig(process.cwd()), raw, "dash-host");
+    if (result.error) {
+      setMessage(result.error);
       return;
     }
-    if (!parsed.title) {
-      setMessage("empty title - nothing created");
-      return;
-    }
-    const config = loadConfig(process.cwd());
-    const tool = parsed.tool ?? resolveTool(parsed.title, config);
-    const ticket = await new Store().mutate((d): Ticket => {
-      const t: Ticket = {
-        id: nextId("t", d.tickets),
-        title: parsed.title,
-        desc: "",
-        status: "open",
-        notes: [],
-        createdBy: "dash-host",
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        routedTo: { tool, model: parsed.model, auto: !parsed.tool },
-      };
-      d.tickets.push(t);
-      return t;
-    });
+    const rt = result.ticket!.routedTo!;
     setMessage(
-      `created ${ticket.id} → ${tool}${parsed.model ? `:${parsed.model}` : ""} [${parsed.tool ? "manual" : "auto-routed"}] · r to dispatch`
+      `created ${result.ticket!.id} → ${rt.tool}${rt.model ? `:${rt.model}` : ""} [${rt.auto ? "auto-routed" : "manual"}] · r to dispatch`
     );
   };
 
   const armDispatch = async (): Promise<void> => {
-    const store = new Store();
     const config = loadConfig(process.cwd());
-    const plan = await store.mutate((d): Ticket[] => {
-      const open = d.tickets.filter((t) => t.status === "open" && !dispatchedRef.current.has(t.id));
-      for (const t of open) {
-        if (!t.routedTo) t.routedTo = { tool: resolveTool(`${t.title} ${t.desc}`, config), auto: true };
-      }
-      return open.map((t) => ({ ...t }));
-    });
+    const plan = await planOpenTickets(new Store(), config, { exclude: dispatchedRef.current });
     if (plan.length === 0) {
       setMessage("no open tickets to dispatch");
       return;
     }
-    setPending({ plan, mode: config.permissionMode, planFile: config.planFile });
+    setPending({ plan, config });
     const summary = plan.map((t) => `${t.id}→${t.routedTo!.tool}${t.routedTo!.model ? `:${t.routedTo!.model}` : ""}`).join(" · ");
     setMessage(`will dispatch [mode ${config.permissionMode}]: ${summary} — r again to confirm, any other key cancels`);
   };
 
-  const confirmDispatch = (p: { plan: Ticket[]; mode: PermissionMode; planFile?: string }): void => {
+  const confirmDispatch = (p: { plan: Ticket[]; config: ConnectrConfig }): void => {
     setPending(null);
-    const runsDir = path.join(new Store().dir, "runs");
-    const parts: string[] = [];
-    for (const t of p.plan) {
-      const { child } = launchTicket(t, process.cwd(), runsDir, { detach: true, mode: p.mode, planFile: p.planFile });
-      if (child) {
-        dispatchedRef.current.add(t.id);
-        parts.push(`${t.id}→${t.routedTo!.tool}${t.routedTo!.model ? `:${t.routedTo!.model}` : ""} pid ${child.pid}`);
-      } else {
-        parts.push(`${t.id}: ${t.routedTo!.tool} NOT FOUND`);
-      }
-    }
+    const launches = launchPlanned(p.plan, process.cwd(), new Store().dir, p.config, true);
+    for (const l of launches) if (l.ok) dispatchedRef.current.add(l.id);
+    const parts = launches.map((l) =>
+      l.ok ? `${l.id}→${l.tool}${l.model ? `:${l.model}` : ""} pid ${l.pid}` : `${l.id}: ${l.tool} NOT FOUND`
+    );
     setMessage(`dispatched ${parts.join(" · ")}`);
     setShowLog(true);
   };
