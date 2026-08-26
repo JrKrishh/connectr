@@ -452,7 +452,22 @@ program
         );
       }
     }
-    console.log(`\ndispatch mode: ${loadConfig(process.cwd()).permissionMode}`);
+    const config = loadConfig(process.cwd());
+    console.log("\ntools:");
+    for (const t of detectTools(config.toolSpecs)) {
+      const state = !t.installed
+        ? "not installed"
+        : t.signedIn === false
+          ? `signed out${t.signInHint ? ` - run: ${t.signInHint}` : ""}`
+          : t.signedIn === null
+            ? t.kind === "participant"
+              ? "joins the brain over MCP"
+              : "installed (sign-in not checkable)"
+            : "installed · signed in";
+      const ready = t.installed && t.signedIn !== false;
+      console.log(`  [${ready ? "x" : " "}] ${t.tool.padEnd(13)} ${t.kind.padEnd(12)} ${state}`);
+    }
+    console.log(`\ndispatch mode: ${config.permissionMode}`);
     try {
       const store = new Store();
       await store.mutate(() => {});

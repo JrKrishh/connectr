@@ -81,6 +81,45 @@ In the dash, `a` opens an input — `title` auto-routes, `title @codex:gpt-5-cod
 and model manually. `r` shows the dispatch plan and permission mode; pressing `r` again confirms.
 Agents launch detached, so they keep working after you quit the dash.
 
+## Accounts and subscriptions
+
+**There is nothing to connect.** ConnectR has no accounts, no API keys, no OAuth, no login
+screen. It dispatches work by running the CLI you already have installed, as a child
+process — that child reads its own credentials from its own place in your home directory:
+
+| Tool | Signs in with | Keeps credentials in |
+|---|---|---|
+| Claude Code | `claude` | `~/.claude/.credentials.json` |
+| Codex | `codex login` | `~/.codex/auth.json` |
+| Gemini CLI | `gemini` | `~/.gemini/oauth_creds.json` |
+| Cursor / Kiro / Antigravity | the IDE's own sign-in | the IDE's own store |
+
+So the setup is: install a tool, sign into it once the way you normally would, done.
+ConnectR never sees, stores or transmits a credential — the only thing it does with them
+is check that the file *exists*, to tell you a tool is ready.
+
+This is also why it costs nothing on top of what you already pay: because the work runs
+through the CLIs, it bills against your existing **Claude Pro/Max, ChatGPT Plus or Google
+subscription** rather than per-token API charges.
+
+Check readiness before you dispatch:
+
+```bash
+connectr doctor
+```
+
+```
+tools:
+  [x] claude-code   dispatch     installed · signed in
+  [x] codex         dispatch     installed · signed in
+  [ ] gemini        dispatch     signed out - run: gemini
+  [x] cursor        participant  joins the brain over MCP
+```
+
+A tool that declares no credential file reports "sign-in not checkable" rather than
+guessing — if a tool keeps its credentials in an OS keychain, ConnectR says so instead of
+claiming a state it cannot verify.
+
 ## Add another coding tool
 
 ConnectR's tools are data, not code. The three below ship built in; anything else you run
@@ -111,6 +150,8 @@ is a JSON object in `.connectr/config.json` under `tools` — no fork, no PR, no
 | `modelArgs` | added only when a model is set — this is what makes model-level routing work for your tool |
 | `modes` | flags per permission profile; leave `safe`/`auto` empty if the tool has no gating |
 | `prompt` | `stdin` (default) pipes the task to the process; `arg` puts it in `{prompt}` |
+| `authFile` | home-relative credential file, checked for existence only, so `doctor` can tell you the tool is signed in |
+| `signInHint` | the command `doctor` suggests when those credentials are missing |
 
 A `participant` entry needs only `id`, `kind` and `homeDir` (the folder whose presence
 means it's installed) — it gets wired to the shared brain and shows up in the orchestra.

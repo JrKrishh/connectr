@@ -12,14 +12,17 @@ export interface DetectedTool {
   tool: string;
   kind: ToolKind;
   installed: boolean;
+  /** true/false when the tool declares an authFile; null when we cannot know. */
+  signedIn: boolean | null;
+  signInHint?: string;
   via: string;
   targetSlugs: string[]; // init targets to wire when this tool is selected
 }
 
 // Detection reads the registry, so a tool the user declared in config is detected like
 // any built-in: a dispatch tool by its binary on PATH, a participant by its config dir.
-export function detectTools(userTools: ToolSpec[] = []): DetectedTool[] {
-  const home = os.homedir();
+// Sign-in is an existence check on the tool's own credential file - never a read.
+export function detectTools(userTools: ToolSpec[] = [], home = os.homedir()): DetectedTool[] {
   return toolRegistry(userTools).map((spec) => {
     const installed =
       spec.kind === "participant"
@@ -31,7 +34,15 @@ export function detectTools(userTools: ToolSpec[] = []): DetectedTool[] {
       spec.kind === "participant"
         ? `~/${(spec.homeDir ?? []).join("/")}`
         : `${spec.bin} on PATH`;
-    return { tool: spec.id, kind: spec.kind, installed, via, targetSlugs: spec.targetSlugs ?? [] };
+    return {
+      tool: spec.id,
+      kind: spec.kind,
+      installed,
+      signedIn: spec.authFile ? fs.existsSync(path.join(home, ...spec.authFile)) : null,
+      signInHint: spec.signInHint,
+      via,
+      targetSlugs: spec.targetSlugs ?? [],
+    };
   });
 }
 

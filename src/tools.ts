@@ -21,6 +21,15 @@ export interface ToolSpec {
   prompt?: PromptDelivery;
   /** Home-relative directory whose presence means the tool is installed (participants). */
   homeDir?: string[];
+  /**
+   * Home-relative path to the file this tool writes when you sign in. ConnectR only ever
+   * checks that it exists - it never reads it. Omit when a tool keeps credentials
+   * somewhere we cannot check (an OS keychain), so readiness reports "unknown" instead of
+   * claiming a sign-in state we do not actually know.
+   */
+  authFile?: string[];
+  /** What to run to sign in, shown when credentials are missing. */
+  signInHint?: string;
   /** `connectr init` targets to wire when this tool is selected. */
   targetSlugs?: string[];
   /** Set by loadConfig for tools declared by the user rather than shipped. */
@@ -45,6 +54,8 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       auto: ["--permission-mode", "acceptEdits", "--allowedTools", "mcp__connectr"],
       yolo: ["--dangerously-skip-permissions"],
     },
+    authFile: [".claude", ".credentials.json"],
+    signInHint: "claude",
     targetSlugs: ["claude", "claude-md"],
   },
   {
@@ -58,6 +69,8 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       auto: ["--full-auto"],
       yolo: ["--dangerously-bypass-approvals-and-sandbox"],
     },
+    authFile: [".codex", "auth.json"],
+    signInHint: "codex login",
     targetSlugs: ["codex"],
   },
   {
@@ -71,6 +84,8 @@ export const BUILTIN_TOOLS: ToolSpec[] = [
       auto: ["--approval-mode", "auto_edit"],
       yolo: ["--approval-mode", "yolo"],
     },
+    authFile: [".gemini", "oauth_creds.json"],
+    signInHint: "gemini",
     targetSlugs: ["gemini-md", "gemini"],
   },
   { id: "cursor", kind: "participant", homeDir: [".cursor"], targetSlugs: ["cursor", "cursor-rules"] },
@@ -108,6 +123,8 @@ export function normalizeToolSpec(raw: unknown): ToolSpec | null {
     modes,
     prompt: r.prompt === "arg" ? "arg" : "stdin",
     homeDir: strings(r.homeDir),
+    authFile: strings(r.authFile),
+    signInHint: typeof r.signInHint === "string" ? r.signInHint : undefined,
     targetSlugs: strings(r.targetSlugs),
     userDefined: true,
   };
