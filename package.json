@@ -1,6 +1,6 @@
 {
   "name": "connectr-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shared brain for AI coding agents - one MCP server giving Claude Code, Codex, Cursor, Kiro, Gemini CLI and Antigravity a common task board, shared memory and advisory file claims.",
   "type": "module",
   "license": "MIT",
