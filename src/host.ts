@@ -20,7 +20,7 @@ export async function addTaskFromInput(store: Store, config: ConnectrConfig, raw
     const routedTo = parsed.tool
       ? { tool: parsed.tool, model: parsed.model, auto: false, via: "manual" as const }
       : (() => {
-          const smart = resolveToolSmart(parsed.title, d, config);
+          const smart = resolveToolSmart(parsed.title, "", d, config);
           return { tool: smart.tool, model: parsed.model, auto: true, via: smart.via, reason: smart.reason };
         })();
     const t: Ticket = {
@@ -54,7 +54,7 @@ export async function planOpenTickets(
     );
     for (const t of open) {
       if (!t.routedTo) {
-        const smart = resolveToolSmart(`${t.title} ${t.desc}`, d, config);
+        const smart = resolveToolSmart(t.title, t.desc, d, config);
         t.routedTo = { tool: smart.tool, auto: true, via: smart.via, reason: smart.reason };
       }
     }

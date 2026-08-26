@@ -237,7 +237,7 @@ taskCmd
       const routedTo = manual
         ? { tool: opts.tool!, model: opts.model, auto: false, via: "manual" as const }
         : (() => {
-            const smart = resolveToolSmart(`${title} ${opts.desc ?? ""}`, d, config);
+            const smart = resolveToolSmart(title, opts.desc ?? "", d, config);
             return { tool: smart.tool, model: opts.model, auto: true, via: smart.via, reason: smart.reason };
           })();
       const t: Ticket = {

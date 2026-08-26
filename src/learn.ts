@@ -1,4 +1,4 @@
-import { effectiveRules, type ConnectrConfig } from "./routing.js";
+import { matchRule, type ConnectrConfig } from "./routing.js";
 import type { StoreData } from "./types.js";
 
 // Outcome-learned routing: the board already records which tool completed, failed or lost
@@ -7,15 +7,12 @@ import type { StoreData } from "./types.js";
 
 export const MIN_EVIDENCE = 3;
 
-export function categoryOf(text: string, config: ConnectrConfig): { category: string; ruleTool: string } {
-  const hay = text.toLowerCase();
-  for (const rule of effectiveRules(config)) {
-    try {
-      if (new RegExp(rule.match, "i").test(hay)) return { category: rule.match, ruleTool: rule.tool };
-    } catch {
-      /* bad user regex - skip */
-    }
-  }
+// A title is a deliberate signal about the kind of work; a description is prose that
+// usually name-drops several domains. Match the title first so an explicit keyword there
+// is not diluted, and only widen to the description when the title says nothing.
+export function categoryOf(title: string, desc: string, config: ConnectrConfig): { category: string; ruleTool: string } {
+  const rule = matchRule(title, config) ?? matchRule(`${title} ${desc}`, config);
+  if (rule) return { category: rule.match, ruleTool: rule.tool };
   return { category: "default", ruleTool: config.routing.defaultTool };
 }
 
@@ -63,7 +60,7 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
 
   for (const t of d.tickets) {
     if (t.status !== "closed") continue;
-    const { category, ruleTool } = categoryOf(`${t.title} ${t.desc}`, config);
+    const { category, ruleTool } = categoryOf(t.title, t.desc, config);
     for (const n of t.notes) {
       const m = n.text.match(/^takeover from '([^']+)'/);
       if (m) bump(category, ruleTool, agentTool(d, m[1]), "losses");
@@ -83,11 +80,20 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
         bestRate = rateOf(s);
       }
     }
-    if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool) {
+    // Only override a rule once its own tool has actually been tried here. Without this the
+    // router locks onto whoever happened to run first and never lets the rule's tool prove
+    // itself - "never tried" would read as "worse than the incumbent".
+    const ruleToolTried = c.stats[c.ruleTool] !== undefined;
+    if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool && ruleToolTried) {
       c.pick = best;
       c.learned = true;
       const s = c.stats[best]!;
-      c.reason = `${best} ${s.wins}w/${s.losses}l outperforms ${c.ruleTool} here (${c.evidence} outcomes)`;
+      const r = c.stats[c.ruleTool]!;
+      c.reason = `${best} ${s.wins}w/${s.losses}l beats ${c.ruleTool} ${r.wins}w/${r.losses}l here (${c.evidence} outcomes)`;
+    } else if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool) {
+      c.pick = c.ruleTool;
+      c.learned = false;
+      c.reason = `${c.ruleTool} untried here - keeping the rule so it can prove itself (${c.evidence} outcomes for others)`;
     } else {
       c.pick = c.ruleTool;
       c.learned = false;
@@ -104,8 +110,8 @@ export interface SmartRoute {
   reason: string;
 }
 
-export function resolveToolSmart(text: string, d: StoreData, config: ConnectrConfig): SmartRoute {
-  const { category, ruleTool } = categoryOf(text, config);
+export function resolveToolSmart(title: string, desc: string, d: StoreData, config: ConnectrConfig): SmartRoute {
+  const { category, ruleTool } = categoryOf(title, desc, config);
   const learning = learnRoutes(d, config).get(category);
   if (learning?.learned) return { tool: learning.pick, via: "learned", category, reason: learning.reason };
   return {

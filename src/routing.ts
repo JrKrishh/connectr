@@ -84,17 +84,50 @@ export function effectiveRules(config: ConnectrConfig): RoutingRule[] {
   return [...config.routing.rules, ...DEFAULT_RULES];
 }
 
-export function resolveTool(
-  text: string,
-  config: ConnectrConfig = { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE }
-): string {
-  const hay = text.toLowerCase();
-  for (const rule of effectiveRules(config)) {
+// How much of a rule the text actually supports: one point per distinct alternation term
+// that appears. A rule written as a single grouped regex still scores 1 when it matches.
+function scoreRule(rule: RoutingRule, hay: string): number {
+  let hits = 0;
+  for (const term of rule.match.split("|")) {
+    if (!term) continue;
     try {
-      if (new RegExp(rule.match, "i").test(hay)) return rule.tool;
+      if (new RegExp(term, "i").test(hay)) hits++;
     } catch {
       /* bad user regex - skip */
     }
   }
-  return config.routing.defaultTool;
+  if (hits === 0) {
+    try {
+      if (new RegExp(rule.match, "i").test(hay)) hits = 1;
+    } catch {
+      /* bad user regex - skip */
+    }
+  }
+  return hits;
+}
+
+// User rules win outright when any of them matches; within a group the best-supported rule
+// wins, so a passing mention ("build") cannot outvote the real subject ("docs", "readme").
+export function matchRule(text: string, config: ConnectrConfig): RoutingRule | null {
+  const hay = text.toLowerCase();
+  for (const group of [config.routing.rules, DEFAULT_RULES]) {
+    let best: RoutingRule | null = null;
+    let bestScore = 0;
+    for (const rule of group) {
+      const score = scoreRule(rule, hay);
+      if (score > bestScore) {
+        best = rule;
+        bestScore = score;
+      }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+export function resolveTool(
+  text: string,
+  config: ConnectrConfig = { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE }
+): string {
+  return matchRule(text, config)?.tool ?? config.routing.defaultTool;
 }
