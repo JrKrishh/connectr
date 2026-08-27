@@ -3,6 +3,7 @@ import { resolveToolSmart } from "./learn.js";
 import { plannerTicket } from "./planner.js";
 import { parseTaskInput, type ConnectrConfig } from "./routing.js";
 import { launchTicket } from "./spawn.js";
+import { createWorktree } from "./worktree.js";
 import { Store, nextId } from "./store.js";
 import type { Ticket } from "./types.js";
 
@@ -102,17 +103,53 @@ export interface LaunchSummary {
   pid?: number;
   ok: boolean;
   logFile: string;
+  /** Set when the agent was given its own git worktree instead of the shared tree. */
+  worktree?: string;
+  /** Why isolation was skipped, when it was asked for but not possible. */
+  isolationNote?: string;
+}
+
+export interface Workspace {
+  cwd: string;
+  env?: Record<string, string>;
+  worktree?: string;
+  isolationNote?: string;
+}
+
+/**
+ * Where a ticket's agent should work. With isolation on it gets a private git worktree,
+ * but every agent must still meet on ONE board: a worktree has no `.connectr` (it is
+ * gitignored), so CONNECTR_STORE pins the store to the main project and the wiring files
+ * are copied across. Every dispatch path goes through here - an agent quietly launched in
+ * the shared tree is exactly the bug isolation exists to prevent.
+ */
+export function prepareWorkspace(ticketId: string, cwd: string, storeDir: string, config: ConnectrConfig): Workspace {
+  if (config.isolation !== "worktree") return { cwd };
+  const made = createWorktree(cwd, storeDir, ticketId);
+  if (!made.worktree) return { cwd, isolationNote: made.reason };
+  return { cwd: made.worktree.path, env: { CONNECTR_STORE: storeDir }, worktree: made.worktree.path };
 }
 
 export function launchPlanned(plan: Ticket[], cwd: string, storeDir: string, config: ConnectrConfig, detach: boolean): LaunchSummary[] {
   const runsDir = path.join(storeDir, "runs");
   return plan.map((t) => {
-    const { child, logFile } = launchTicket(t, cwd, runsDir, {
+    const { cwd: workDir, env, worktree, isolationNote } = prepareWorkspace(t.id, cwd, storeDir, config);
+    const { child, logFile } = launchTicket(t, workDir, runsDir, {
       detach,
       mode: config.permissionMode,
       planFile: config.planFile,
       userTools: config.toolSpecs,
+      env,
     });
-    return { id: t.id, tool: t.routedTo!.tool, model: t.routedTo!.model, pid: child?.pid, ok: !!child, logFile };
+    return {
+      id: t.id,
+      tool: t.routedTo!.tool,
+      model: t.routedTo!.model,
+      pid: child?.pid,
+      ok: !!child,
+      logFile,
+      worktree,
+      isolationNote,
+    };
   });
 }

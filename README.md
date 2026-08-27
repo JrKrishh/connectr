@@ -172,6 +172,31 @@ one look away. Only `claude-code`, `codex` and `gemini` are verified against rea
 here — treat any preset you find (including the one above) as a starting point to check on
 your own machine.
 
+## Running agents in parallel
+
+`claim_files` only *warns* another agent off a path. Two agents in one working tree can
+still overwrite each other's edits. Turn on isolation and every dispatched ticket gets its
+own git worktree on its own branch:
+
+```bash
+connectr isolation worktree
+connectr run              # each agent works in .connectr/trees/<ticket>
+connectr trees            # what is waiting in each one
+connectr merge t3         # bring a ticket's commits back, then remove its tree
+```
+
+They still share one board. A worktree is a fresh checkout, so it has no `.connectr` and
+none of the files `connectr init` wrote - ConnectR copies the wiring across and pins
+`CONNECTR_STORE` to the main project, or each agent would silently get its own private
+brain, which defeats the point.
+
+`connectr merge` refuses rather than risking work: it will not merge while the agent left
+uncommitted changes in its worktree, or while your own tree is dirty. ConnectR's own
+scaffolding (`.connectr/`, the copied wiring) never counts as "dirty" - only real work does.
+
+Isolation needs git. In a non-git project ConnectR says so and falls back to the shared
+tree rather than failing the dispatch.
+
 ## Dispatch permission modes
 
 One setting decides how much every dispatched agent may do, and ConnectR launches each

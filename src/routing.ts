@@ -30,6 +30,10 @@ export function parseTaskInput(raw: string): ParsedTaskInput {
 }
 
 export type PermissionMode = "safe" | "auto" | "yolo";
+export type Isolation = "off" | "worktree";
+
+export const ISOLATIONS: Isolation[] = ["off", "worktree"];
+export const DEFAULT_ISOLATION: Isolation = "off";
 
 export const PERMISSION_MODES: PermissionMode[] = ["safe", "auto", "yolo"];
 export const DEFAULT_PERMISSION_MODE: PermissionMode = "auto";
@@ -40,6 +44,8 @@ export interface ConnectrConfig {
     defaultTool: string;
   };
   permissionMode: PermissionMode;
+  /** "worktree" gives each dispatched ticket its own git worktree and branch. */
+  isolation: Isolation;
   tools?: string[]; // orchestra selected at `connectr new` (informational)
   planFile?: string; // project brief injected into dispatched agents' prompts
   toolSpecs?: ToolSpec[]; // extra coding tools declared by the user (config "tools" array of objects)
@@ -68,6 +74,7 @@ export function loadConfig(root: string): ConnectrConfig {
           defaultTool: typeof raw?.routing?.defaultTool === "string" ? raw.routing.defaultTool : DEFAULT_TOOL,
         },
         permissionMode: PERMISSION_MODES.includes(raw?.permissionMode) ? raw.permissionMode : DEFAULT_PERMISSION_MODE,
+        isolation: ISOLATIONS.includes(raw?.isolation) ? raw.isolation : DEFAULT_ISOLATION,
         // "tools" holds either selected ids (strings) or full tool declarations (objects),
         // so one key covers both "which tools this project uses" and "here's a new tool".
         ...(Array.isArray(raw?.tools) ? { tools: raw.tools.filter((t: unknown) => typeof t === "string") } : {}),
@@ -80,7 +87,7 @@ export function loadConfig(root: string): ConnectrConfig {
       /* corrupt config falls through to defaults */
     }
   }
-  return { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE };
+  return { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE, isolation: DEFAULT_ISOLATION };
 }
 
 export function saveConfig(root: string, config: ConnectrConfig): void {
@@ -135,7 +142,7 @@ export function matchRule(text: string, config: ConnectrConfig): RoutingRule | n
 
 export function resolveTool(
   text: string,
-  config: ConnectrConfig = { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE }
+  config: ConnectrConfig = { routing: { rules: [], defaultTool: DEFAULT_TOOL }, permissionMode: DEFAULT_PERMISSION_MODE, isolation: DEFAULT_ISOLATION }
 ): string {
   return matchRule(text, config)?.tool ?? config.routing.defaultTool;
 }

@@ -161,7 +161,7 @@ export function launchTicket(
   ticket: Ticket,
   cwd: string,
   runsDir: string,
-  opts: { detach?: boolean; mode?: PermissionMode; planFile?: string; userTools?: ToolSpec[] } = {}
+  opts: { detach?: boolean; mode?: PermissionMode; planFile?: string; userTools?: ToolSpec[]; env?: Record<string, string> } = {}
 ): { child: ChildProcess | null; logFile: string } {
   fs.mkdirSync(runsDir, { recursive: true });
   const tool = ticket.routedTo?.tool ?? "claude-code";
@@ -175,6 +175,7 @@ export function launchTicket(
     mode: opts.mode,
     detach: opts.detach,
     userTools: opts.userTools,
+    env: opts.env,
   });
   return { child, logFile };
 }

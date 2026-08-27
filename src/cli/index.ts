@@ -3,10 +3,11 @@ import { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
-import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
+import { ISOLATIONS, PERMISSION_MODES, loadConfig, saveConfig, type Isolation, type PermissionMode } from "../routing.js";
+import { isGitRepo, listWorktrees, mergeWorktree } from "../worktree.js";
 import { MODE_INFO, toolRegistry } from "../tools.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
-import { planIntent, planOpenTickets } from "../host.js";
+import { planIntent, planOpenTickets, prepareWorkspace } from "../host.js";
 import { plannerTicket } from "../planner.js";
 import { MIN_EVIDENCE, learnRoutes, resolveToolSmart } from "../learn.js";
 import { launchTicket, toolKnown } from "../spawn.js";
@@ -239,9 +240,12 @@ program
     console.log(`planning with ${planner.routedTo!.tool} (${planner.id}) - mode ${config.permissionMode}\n`);
 
     const runsDir = path.join(store.dir, "runs");
-    const { child, logFile } = launchTicket(planner, process.cwd(), runsDir, {
+    const pws = prepareWorkspace(planner.id, process.cwd(), store.dir, config);
+    const { child, logFile } = launchTicket(planner, pws.cwd, runsDir, {
       mode: config.permissionMode,
       planFile: config.planFile,
+      userTools: config.toolSpecs,
+      env: pws.env,
     });
     if (!child) {
       console.error(`${planner.routedTo!.tool} not found - install it or pass --tool`);
@@ -268,9 +272,12 @@ program
     if (opts.run) {
       const plan = await planOpenTickets(new Store(), config);
       for (const t of plan) {
-        const { child: c, logFile: lf } = launchTicket(t, process.cwd(), runsDir, {
+        const ws = prepareWorkspace(t.id, process.cwd(), store.dir, config);
+        const { child: c, logFile: lf } = launchTicket(t, ws.cwd, runsDir, {
           mode: config.permissionMode,
           planFile: config.planFile,
+          userTools: config.toolSpecs,
+          env: ws.env,
           detach: true,
         });
         console.log(c ? `launched ${t.id} -> ${t.routedTo!.tool} (pid ${c.pid}, log ${lf})` : `${t.id}: ${t.routedTo!.tool} NOT FOUND`);
@@ -355,16 +362,23 @@ program
     const runsDir = path.join(store.dir, "runs");
     const children = plan.map((t) => {
       const tool = t.routedTo!.tool;
-      const { child, logFile } = launchTicket(t, process.cwd(), runsDir, {
+      const ws = prepareWorkspace(t.id, process.cwd(), store.dir, config);
+      if (ws.isolationNote) console.log(`${t.id}: isolation skipped - ${ws.isolationNote}`);
+      const { child, logFile } = launchTicket(t, ws.cwd, runsDir, {
         mode: config.permissionMode,
         planFile: config.planFile,
+        userTools: config.toolSpecs,
+        env: ws.env,
       });
       if (!child) {
         console.log(`${t.id}: ${tool} NOT FOUND - skipped`);
         return null;
       }
       const model = t.routedTo!.model;
-      console.log(`launched ${t.id} -> ${tool}${model ? ` (${model})` : ""} (pid ${child.pid}, log ${logFile})`);
+      console.log(
+        `launched ${t.id} -> ${tool}${model ? ` (${model})` : ""} (pid ${child.pid})` +
+          (ws.worktree ? `\n          tree ${ws.worktree}` : "")
+      );
       return child;
     });
     await Promise.all(children.map((c) => (c ? new Promise((r) => c.on("close", r)) : Promise.resolve())));
@@ -389,6 +403,71 @@ program
     console.log(`tickets: ${d.tickets.filter((t) => t.status !== "closed").length} open / ${d.tickets.length} total`);
     console.log(`facts : ${d.facts.length}`);
     console.log(`claims: ${d.claims.length}`);
+  });
+
+program
+  .command("trees")
+  .description("Show the git worktrees ConnectR made for tickets, and what is waiting in them")
+  .action(() => {
+    const store = new Store();
+    const root = path.dirname(store.dir);
+    if (!isGitRepo(root)) {
+      console.log("not a git repository - isolation is unavailable here");
+      return;
+    }
+    const trees = listWorktrees(root, store.dir);
+    if (trees.length === 0) {
+      console.log("no worktrees. Turn isolation on with: connectr isolation worktree");
+      return;
+    }
+    for (const t of trees) {
+      const state = [t.commits > 0 ? `${t.commits} commit${t.commits === 1 ? "" : "s"} to merge` : "nothing to merge"];
+      if (t.dirty) state.push("UNCOMMITTED changes");
+      console.log(`${t.ticket.padEnd(6)} ${t.branch.padEnd(18)} ${state.join(" · ")}`);
+      console.log(`       ${t.path}`);
+    }
+    console.log("\nbring one back with: connectr merge <ticket>");
+  });
+
+program
+  .command("merge")
+  .description("Merge a ticket's worktree branch back into your current branch")
+  .argument("<ticket>", "ticket id, e.g. t12")
+  .option("--keep", "keep the worktree and branch after merging")
+  .action((ticket: string, opts: { keep?: boolean }) => {
+    const store = new Store();
+    const root = path.dirname(store.dir);
+    const result = mergeWorktree(root, store.dir, ticket, { remove: !opts.keep });
+    console.log(result.message);
+    if (!result.ok) process.exitCode = 1;
+  });
+
+program
+  .command("isolation")
+  .description("Show or set whether each dispatched ticket gets its own git worktree")
+  .argument("[mode]", "off | worktree")
+  .action((mode?: string) => {
+    const root = path.dirname(new Store().dir);
+    const config = loadConfig(root);
+    if (mode) {
+      if (!ISOLATIONS.includes(mode as Isolation)) {
+        console.error(`unknown isolation '${mode}' - use off or worktree`);
+        process.exitCode = 1;
+        return;
+      }
+      if (mode === "worktree" && !isGitRepo(root)) {
+        console.error("this project is not a git repository, so worktree isolation cannot work here");
+        process.exitCode = 1;
+        return;
+      }
+      config.isolation = mode as Isolation;
+      saveConfig(root, config);
+    }
+    console.log(
+      config.isolation === "worktree"
+        ? `worktree${mode ? " (saved)" : ""} - every dispatched ticket gets its own checkout on branch connectr/<ticket>, sharing one board`
+        : `off${mode ? " (saved)" : ""} - all agents work in this tree; claim_files only warns them off each other`
+    );
   });
 
 program
