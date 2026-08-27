@@ -391,6 +391,31 @@ program
   });
 
 program
+  .command("tools")
+  .description("List the coding tools ConnectR can see, and whether each is ready to work")
+  .option("--json", "machine-readable output, for programs that drive ConnectR")
+  .action((opts: { json?: boolean }) => {
+    const config = loadConfig(process.cwd());
+    const found = detectTools(config.toolSpecs);
+    if (opts.json) {
+      console.log(JSON.stringify({ tools: found, permissionMode: config.permissionMode }, null, 2));
+      return;
+    }
+    for (const t of found) {
+      const state = !t.installed
+        ? "not installed"
+        : t.signedIn === false
+          ? `signed out${t.signInHint ? ` - run: ${t.signInHint}` : ""}`
+          : t.signedIn === null
+            ? t.kind === "participant"
+              ? "joins the brain over MCP"
+              : "installed (sign-in not checkable)"
+            : "installed · signed in";
+      console.log(`${t.installed && t.signedIn !== false ? "x" : " "}  ${t.tool.padEnd(13)} ${t.kind.padEnd(12)} ${state}`);
+    }
+  });
+
+program
   .command("routes")
   .description("Show learned routing: how past outcomes reshape where new tasks go")
   .action(() => {
