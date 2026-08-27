@@ -128,6 +128,36 @@ export const UI_HTML = `<!doctype html>
 
   .sec-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
     color:var(--faint);margin:22px 0 10px;display:flex;align-items:center;gap:8px}
+
+  /* review & merge: the work agents did, waiting to come back */
+  .review{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0 0;
+    padding:10px 13px;border:1px solid var(--accent);border-radius:var(--r);
+    background:var(--accent-dim)}
+  .review .rv-t{font-size:13px;color:var(--ink);flex:1;min-width:180px}
+  .review .rv-t b{color:var(--accent)}
+  .review button{font:550 12.5px var(--sans);padding:7px 13px;border-radius:999px;cursor:pointer;
+    border:1px solid var(--border);background:var(--surface);color:var(--ink)}
+  .review button:hover{border-color:var(--accent)}
+  .review button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .review.warn{border-color:var(--amber);background:var(--amber-dim)}
+  .review.warn .rv-t b{color:var(--amber)}
+
+  .diff{font-family:var(--mono);font-size:11.5px;line-height:1.5}
+  .diff div{white-space:pre-wrap;word-break:break-word}
+  .diff .df{color:var(--ink);font-weight:600;margin-top:10px}
+  .diff .dh{color:var(--accent)}
+  .diff .da{color:#4CC38A}
+  .diff .dd{color:var(--red)}
+  .diff .dm{color:var(--faint)}
+  .diff .dstat{color:var(--muted);border-bottom:1px solid var(--border);
+    padding-bottom:8px;margin-bottom:8px}
+
+  .samples{display:flex;flex-direction:column;gap:8px;margin-top:16px;max-width:440px}
+  .sample{text-align:left;font:inherit;font-size:13px;color:var(--muted);cursor:pointer;
+    background:var(--surface);border:1px dashed var(--border);border-radius:var(--r);
+    padding:10px 13px;transition:border-color .14s ease,color .14s ease}
+  .sample:hover{border-color:var(--accent);color:var(--ink)}
+  .sample b{color:var(--accent);font-weight:600}
   .desc{font-size:13.5px;color:var(--muted);line-height:1.6;white-space:pre-wrap}
 
 
@@ -416,7 +446,7 @@ var I={
 };
 
 var sel=null, selLog=null, logTimer=null, logES=null, logBuf="", pending=null, last=null,
-    toastT=null, autoPicked=false;
+    toastT=null, autoPicked=false, diffMode=false, diffCache=null;
 
 /* ---------- transcript ----------
    Agents write markdown, so render it instead of dumping it. Everything is escaped
@@ -506,6 +536,24 @@ function renderMerged(notes, logText){
     }
   }
   return html||'<p>nothing has happened on this ticket yet</p>';
+}
+
+/* A unified diff, colored line by line. Everything is escaped before it gets a class. */
+function renderDiff(d){
+  var out=[];
+  if(d.stat)out.push('<div class="dstat">'+esc(d.stat)+"</div>");
+  var lines=String(d.patch||"").split("\\n");
+  for(var i=0;i<lines.length;i++){
+    var L=lines[i], cls="dm";
+    if(L.indexOf("diff --git")===0)cls="df";
+    else if(L.indexOf("@@")===0)cls="dh";
+    else if(L.indexOf("+++")===0||L.indexOf("---")===0)cls="dm";
+    else if(L.charAt(0)==="+")cls="da";
+    else if(L.charAt(0)==="-")cls="dd";
+    out.push('<div class="'+cls+'">'+(esc(L)||"&nbsp;")+"</div>");
+  }
+  if(d.truncated)out.push('<div class="dm">&hellip; diff truncated - the merge still brings everything</div>');
+  return '<div class="diff">'+out.join("")+"</div>";
 }
 
 function renderTranscript(text){
@@ -626,6 +674,21 @@ function renderDetail(s){
   h+='</div>';
   if(t.routedTo&&t.routedTo.reason)
     h+='<div class="why"><span class="lbl">routing</span><span>'+esc(t.routedTo.reason)+'</span></div>';
+
+  // The closing move: work waiting in this ticket's worktree, reviewable and mergeable
+  // right here instead of via the CLI.
+  if(t.tree&&t.tree.commits>0){
+    h+='<div class="review"><span class="rv-t"><b>'+t.tree.commits+' commit'+(t.tree.commits===1?"":"s")+
+      '</b> from this ticket waiting to merge'+(t.tree.dirty?' &middot; plus uncommitted leftovers':'')+
+      '</span><button id="diffBtn">'+(diffMode?"View transcript":"View changes")+'</button>'+
+      '<button class="go" id="mergeBtn">Merge</button></div>';
+  }else if(t.tree&&t.tree.dirty){
+    h+='<div class="review warn"><span class="rv-t"><b>uncommitted changes</b> sit in the worktree - nothing committed to merge yet</span></div>';
+  }
+  if(t.status==="in_progress"&&t.owner&&!s.agents.some(function(a){return a.id===t.owner&&a.live;})){
+    h+='<div class="review warn"><span class="rv-t">The agent on this ticket looks <b>gone</b> - reopen it and dispatch again</span>'+
+      '<button class="go" id="reopenBtn">Reopen</button></div>';
+  }
   h+='</div>';
 
   if(t.desc)h+='<div class="sec-h">Brief</div><div class="desc">'+esc(t.desc)+'</div>';
@@ -637,14 +700,23 @@ function renderDetail(s){
     }).join("")+'</div>';
   }
   h+='<div class="term"><div class="term-h">'+I.term+'<span class="f">'+
-    esc(t.runs&&t.runs.length?(selLog||t.runs[0]):"board events only - no agent has run yet")+'</span>'+
-    (t.status==="in_progress"?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
+    esc(diffMode?("changes on connectr/"+t.id):(t.runs&&t.runs.length?(selLog||t.runs[0]):"board events only - no agent has run yet"))+'</span>'+
+    (t.status==="in_progress"&&!diffMode?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
     '</div><div class="tx" id="logtail">'+
-    (t.runs&&t.runs.length?"loading…":renderMerged(t.notes,""))+'</div></div>';
+    (diffMode
+      ?(diffCache&&diffCache.ticket===t.id?renderDiff(diffCache):"reading the changes...")
+      :(t.runs&&t.runs.length?"loading…":renderMerged(t.notes,"")))+'</div></div>';
   h+='</div>';
   box.innerHTML=h;
 
-  if(t.runs&&t.runs.length){
+  var db=el("diffBtn");if(db)db.onclick=function(){diffMode=!diffMode;if(last)render(last);};
+  var mb=el("mergeBtn");if(mb)mb.onclick=function(){doMerge(t.id);};
+  var rb=el("reopenBtn");if(rb)rb.onclick=function(){doReopen();};
+
+  if(diffMode){
+    stopLog();
+    if(!diffCache||diffCache.ticket!==t.id)loadDiff(t.id);
+  }else if(t.runs&&t.runs.length){
     var want=selLog&&t.runs.indexOf(selLog)>=0?selLog:t.runs[0];
     followLog(want);
   }else{stopLog();}
@@ -657,7 +729,12 @@ function overview(s){
   if(!s.tickets.length){
     return '<div class="detail-in"><div class="quiet"><span class="ic">'+I.idle+'</span>'+
       '<h2>No tasks yet</h2><p>Describe what you want built in the box below. ConnectR picks the tool '+
-      'that fits the work, or you can assign one with <code>@codex</code>.</p></div></div>';
+      'that fits the work, or you can assign one with <code>@codex</code>.</p>'+
+      '<div class="samples">'+
+      '<button class="sample" data-intent="Build a URL shortener: a REST API backed by sqlite, a small CLI to add and list links, and a README with usage examples"><b>Try:</b> a URL shortener - API, CLI and docs</button>'+
+      '<button class="sample" data-intent="Build a personal notes REST API with tagging, full-text search and unit tests for every endpoint"><b>Try:</b> a notes API with search and tests</button>'+
+      '<button class="sample" data-intent="Build a single-page landing site for this project: hero section, feature grid, dark mode toggle"><b>Try:</b> a landing page with dark mode</button>'+
+      '</div></div></div>';
   }
   var h='<div class="detail-in">';
   if(run.length){
@@ -755,9 +832,37 @@ function refresh(){fetch("/api/state").then(function(r){return r.json();}).then(
 
 function select(id){
   if(sel===id)return;
-  sel=id; selLog=null; autoPicked=true;
+  sel=id; selLog=null; autoPicked=true; diffMode=false; diffCache=null;
   if(last)render(last);
   el("detail").scrollTop=0;
+}
+
+function loadDiff(id){
+  fetch("/api/diff?ticket="+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){toast(d.message||"could not read the changes",true);diffMode=false;if(last)render(last);return;}
+    diffCache={ticket:id,stat:d.stat,patch:d.patch,truncated:d.truncated};
+    if(last)render(last);
+  }).catch(function(){toast("could not reach the connectr server",true);});
+}
+
+function doMerge(id){
+  toast("merging "+id+"...");
+  fetch("/api/merge",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticket:id})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      toast(d.message||(d.ok?"merged":"merge failed"),!d.ok);
+      if(d.ok){diffMode=false;diffCache=null;}
+      refresh();
+    })
+    .catch(function(){toast("could not reach the connectr server",true);});
+}
+
+function doReopen(){
+  fetch("/api/sweep",{method:"POST"}).then(function(r){return r.json();}).then(function(d){
+    var n=(d.swept||[]).length;
+    toast(n?("reopened "+n+" ticket"+(n===1?"":"s")+" - dispatch to retry"):"nothing to reopen - the agent may still be alive");
+    refresh();
+  }).catch(function(){});
 }
 
 /* ---------- actions ---------- */
@@ -946,6 +1051,8 @@ el("task").addEventListener("keydown",function(e){
 });
 document.addEventListener("click",function(e){
   var tg=e.target; if(!tg||!tg.closest)return;
+  var sm=tg.closest(".sample");
+  if(sm){el("task").value=sm.getAttribute("data-intent")||"";planIt();return;}
   var rt=tg.closest(".rt");
   if(rt){selLog=rt.getAttribute("data-f");if(last)render(last);return;}
   var node=tg.closest("[data-id]");

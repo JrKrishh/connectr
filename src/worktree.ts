@@ -165,6 +165,37 @@ export function listWorktrees(root: string, storeDir: string): TreeStatus[] {
     });
 }
 
+export interface DiffResult {
+  ok: boolean;
+  message?: string;
+  stat?: string;
+  patch?: string;
+  truncated?: boolean;
+}
+
+const MAX_PATCH_BYTES = 200_000;
+
+/**
+ * What a ticket's branch would bring back. Three-dot diff (merge-base..branch), so it
+ * shows only the agent's own changes even after main has moved on.
+ */
+export function diffWorktree(root: string, ticket: string): DiffResult {
+  if (!isGitRepo(root)) return { ok: false, message: "not a git repository" };
+  const branch = branchFor(ticket);
+  if (!gitQuiet(root, ["rev-parse", "--verify", branch]).ok) {
+    return { ok: false, message: `no branch ${branch} for ${ticket}` };
+  }
+  const stat = gitQuiet(root, ["diff", "--stat", `HEAD...${branch}`]).out.trim();
+  const full = gitQuiet(root, ["diff", `HEAD...${branch}`]).out;
+  const truncated = Buffer.byteLength(full, "utf8") > MAX_PATCH_BYTES;
+  return {
+    ok: true,
+    stat,
+    patch: truncated ? full.slice(0, MAX_PATCH_BYTES) : full,
+    truncated,
+  };
+}
+
 export interface MergeResult {
   ok: boolean;
   message: string;

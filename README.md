@@ -217,6 +217,12 @@ scaffolding (`.connectr/`, the copied wiring) never counts as "dirty" - only rea
 Isolation needs git. In a non-git project ConnectR says so and falls back to the shared
 tree rather than failing the dispatch.
 
+The dashboard covers the same loop without the CLI: a ticket with commits waiting shows a
+banner with **View changes** (the full diff, colored) and **Merge** - one click brings the
+work back and clears the tree. If an agent dies mid-run, the ticket shows an
+"agent looks gone" banner with a **Reopen** button; the failure is recorded as routing
+evidence and the ticket goes back on the board for the next dispatch.
+
 ## Dispatch permission modes
 
 One setting decides how much every dispatched agent may do, and ConnectR launches each

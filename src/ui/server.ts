@@ -1,7 +1,8 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets } from "../host.js";
+import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, sweepDeadRuns } from "../host.js";
+import { diffWorktree, listWorktrees, mergeWorktree, type TreeStatus } from "../worktree.js";
 import { factKind } from "../memory.js";
 import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
 import { MODE_INFO, toolRegistry } from "../tools.js";
@@ -17,6 +18,21 @@ const dispatched = new Set<string>();
 function projectRoot(): string {
   return path.dirname(new Store().dir);
 }
+
+// Tree status shells out to git per worktree; at the SSE cadence of once a second that
+// would be a constant git storm, so it is cached briefly. 3s staleness is invisible next
+// to how long an agent run takes.
+let treeCache: { at: number; trees: TreeStatus[] } = { at: 0, trees: [] };
+function treeStatuses(): TreeStatus[] {
+  const now = Date.now();
+  if (now - treeCache.at > 3000) {
+    const store = new Store();
+    treeCache = { at: now, trees: listWorktrees(projectRoot(), store.dir) };
+  }
+  return treeCache.trees;
+}
+
+const TICKET_ID = /^t\d+$/;
 
 function stateView(): unknown {
   const store = new Store();
@@ -36,6 +52,7 @@ function stateView(): unknown {
     /* no runs yet */
   }
   const runs = allRuns.slice(0, 20);
+  const trees = treeStatuses();
   return {
     project: path.basename(process.cwd()),
     cwd: process.cwd(),
@@ -56,6 +73,10 @@ function stateView(): unknown {
       updatedAt: t.updatedAt,
       notes: t.notes,
       runs: allRuns.filter((r) => r.file.startsWith(`${t.id}-`)).map((r) => r.file),
+      tree: (() => {
+        const w = trees.find((x) => x.ticket === t.id);
+        return w ? { commits: w.commits, dirty: w.dirty } : null;
+      })(),
     })),
     claims: d.claims.filter((c) => c.expiresAt > now).map((c) => ({ agent: c.agent, paths: c.paths })),
     facts: [...d.facts]
@@ -188,6 +209,33 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const body = await readBody(req);
     const result = await addTaskFromInput(new Store(), loadConfig(projectRoot()), String(body.input ?? ""), "web-host");
     json(res, result.error ? 400 : 200, result);
+    return;
+  }
+  if (req.method === "GET" && url.pathname === "/api/diff") {
+    const ticket = url.searchParams.get("ticket") ?? "";
+    if (!TICKET_ID.test(ticket)) {
+      json(res, 400, { error: "ticket must look like t3" });
+      return;
+    }
+    const d = diffWorktree(projectRoot(), ticket);
+    json(res, d.ok ? 200 : 404, d);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/merge") {
+    const body = await readBody(req);
+    const ticket = String(body.ticket ?? "");
+    if (!TICKET_ID.test(ticket)) {
+      json(res, 400, { error: "ticket must look like t3" });
+      return;
+    }
+    const result = mergeWorktree(projectRoot(), new Store().dir, ticket, { remove: true });
+    treeCache.at = 0; // the banner must disappear on the next state push, not in 3s
+    json(res, result.ok ? 200 : 409, result);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/api/sweep") {
+    const swept = await sweepDeadRuns(new Store());
+    json(res, 200, { swept });
     return;
   }
   if (url.pathname === "/api/settings" && (req.method === "GET" || req.method === "POST")) {

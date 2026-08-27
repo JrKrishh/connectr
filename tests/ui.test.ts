@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,15 +7,29 @@ import type http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startUi } from "../src/ui/server.js";
 import { UI_HTML } from "../src/ui/page.js";
+import { Store } from "../src/store.js";
+import { createWorktree } from "../src/worktree.js";
 
 let server: http.Server;
 let base = "";
+let root = "";
 let prevStore: string | undefined;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
 
 beforeAll(async () => {
   prevStore = process.env.CONNECTR_STORE;
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "connectr-ui-"));
+  root = fs.mkdtempSync(path.join(os.tmpdir(), "connectr-ui-"));
   process.env.CONNECTR_STORE = path.join(root, ".connectr");
+  // The review endpoints work against git, so the fixture project is a real repo.
+  git(root, "init");
+  git(root, "config", "user.email", "test@example.com");
+  git(root, "config", "user.name", "test");
+  fs.writeFileSync(path.join(root, "README.md"), "fixture\n");
+  git(root, "add", "README.md");
+  git(root, "commit", "-m", "init");
   server = startUi(0); // ephemeral port
   await new Promise<void>((r) => server.on("listening", () => r()));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -211,5 +226,106 @@ describe("connectr ui server", () => {
   it("blocks log path traversal", async () => {
     const res = await fetch(base + "/api/log?file=..%2F..%2Fstore.json");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("review and merge over http", () => {
+  let ticketId = "";
+
+  it("rejects anything that is not a ticket id", async () => {
+    const diff = await fetch(base + "/api/diff?ticket=..%2Ffoo");
+    expect(diff.status).toBe(400);
+    const merge = await fetch(base + "/api/merge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ticket: "../foo" }),
+    });
+    expect(merge.status).toBe(400);
+  });
+
+  it("404s a diff for a ticket that never had a worktree", async () => {
+    const res = await fetch(base + "/api/diff?ticket=t97");
+    expect(res.status).toBe(404);
+    expect((await res.json()).message).toContain("no branch");
+  });
+
+  it("diffs what a ticket's worktree would bring back", async () => {
+    const create = await fetch(base + "/api/task", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "wire up the review flow" }),
+    });
+    ticketId = (await create.json()).ticket.id;
+
+    // An "agent" does some work in the ticket's isolated tree and commits it.
+    const made = createWorktree(root, process.env.CONNECTR_STORE!, ticketId);
+    expect(made.worktree).not.toBeNull();
+    const tree = made.worktree!.path;
+    fs.writeFileSync(path.join(tree, "review-note.md"), "hello from the worktree\n");
+    git(tree, "add", "review-note.md");
+    git(tree, "commit", "-m", "agent work");
+
+    const d = await (await fetch(base + "/api/diff?ticket=" + ticketId)).json();
+    expect(d.ok).toBe(true);
+    expect(d.stat).toContain("review-note.md");
+    expect(d.patch).toContain("+hello from the worktree");
+  });
+
+  it("shows the commits waiting on the ticket in /api/state", async () => {
+    // tree status is cached for 3s on the server; wait it out
+    await new Promise((r) => setTimeout(r, 3200));
+    const state = await (await fetch(base + "/api/state")).json();
+    const mine = state.tickets.find((t: { id: string }) => t.id === ticketId);
+    expect(mine.tree).toEqual({ commits: 1, dirty: false });
+  }, 10_000);
+
+  it("merges the branch back and clears the worktree", async () => {
+    const res = await fetch(base + "/api/merge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ticket: ticketId }),
+    });
+    expect(res.status).toBe(200);
+    const merged = await res.json();
+    expect(merged.ok).toBe(true);
+    expect(merged.message).toContain("merged 1 commit");
+
+    // the work landed on main, and the review surface is gone with it
+    expect(fs.readFileSync(path.join(root, "review-note.md"), "utf8")).toContain("hello");
+    expect(fs.existsSync(path.join(process.env.CONNECTR_STORE!, "trees", ticketId))).toBe(false);
+    expect((await fetch(base + "/api/diff?ticket=" + ticketId)).status).toBe(404);
+  });
+
+  it("refuses to merge a ticket with nothing behind it", async () => {
+    const res = await fetch(base + "/api/merge", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ticket: "t97" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).message).toContain("no branch");
+  });
+
+  it("sweeps a ticket whose agent died and reopens it", async () => {
+    const create = await fetch(base + "/api/task", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "task the dead agent was holding" }),
+    });
+    const id = (await create.json()).ticket.id;
+    const store = new Store();
+    await store.mutate((d) => {
+      const t = d.tickets.find((x) => x.id === id)!;
+      t.status = "in_progress";
+      t.owner = "ghost-agent"; // never heartbeated, so not live
+    });
+
+    const swept = await (await fetch(base + "/api/sweep", { method: "POST" })).json();
+    expect(swept.swept.map((s: { id: string }) => s.id)).toContain(id);
+
+    const state = await (await fetch(base + "/api/state")).json();
+    const mine = state.tickets.find((t: { id: string }) => t.id === id);
+    expect(mine.status).toBe("open"); // back on the board, ready to re-dispatch
+    expect(mine.owner).toBeNull();
   });
 });
