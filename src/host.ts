@@ -1,10 +1,10 @@
 import path from "node:path";
-import { resolveToolSmart } from "./learn.js";
+import { agentTarget, resolveToolSmart, targetKey } from "./learn.js";
 import { plannerTicket } from "./planner.js";
 import { parseTaskInput, type ConnectrConfig } from "./routing.js";
 import { launchTicket } from "./spawn.js";
 import { createWorktree } from "./worktree.js";
-import { Store, nextId } from "./store.js";
+import { Store, liveAgentIds, nextId } from "./store.js";
 import type { Ticket } from "./types.js";
 
 // Shared host actions used by the CLI `run`, the TUI dash and the web UI.
@@ -107,6 +107,52 @@ export interface LaunchSummary {
   worktree?: string;
   /** Why isolation was skipped, when it was asked for but not possible. */
   isolationNote?: string;
+}
+
+/**
+ * Record how a dispatch ended. A failed run also reopens the ticket and drops the dead
+ * owner, so retrying is just `connectr run` again - and because failures are scored as
+ * losses, the router will pick a different target on its own.
+ */
+export async function recordAttempt(
+  store: Store,
+  ticketId: string,
+  target: string,
+  outcome: "completed" | "failed",
+  detail?: string
+): Promise<void> {
+  await store.mutate((d) => {
+    const t = d.tickets.find((x) => x.id === ticketId);
+    if (!t) return;
+    (t.attempts ??= []).push({ target, at: new Date().toISOString(), outcome, detail });
+    if (outcome === "failed" && t.status !== "closed") {
+      t.status = "open";
+      t.owner = undefined;
+      t.notes.push({
+        agent: "connectr",
+        text: `run failed on ${target}${detail ? ` (${detail})` : ""} - reopened for another attempt`,
+        ts: new Date().toISOString(),
+      });
+      t.updatedAt = new Date().toISOString();
+    }
+  });
+}
+
+/**
+ * Tickets left in_progress by an agent that is no longer alive. A detached dispatch cannot
+ * report its own death, so this is how those runs become data instead of a stuck board.
+ */
+export async function sweepDeadRuns(store: Store): Promise<{ id: string; target: string }[]> {
+  const d = store.read();
+  const live = new Set(liveAgentIds(d));
+  const stuck = d.tickets.filter((t) => t.status === "in_progress" && t.owner && !live.has(t.owner));
+  const swept: { id: string; target: string }[] = [];
+  for (const t of stuck) {
+    const target = t.routedTo ? targetKey(t.routedTo.tool, t.routedTo.model) : agentTarget(d, t.owner!);
+    await recordAttempt(store, t.id, target, "failed", "agent gone");
+    swept.push({ id: t.id, target });
+  }
+  return swept;
 }
 
 export interface Workspace {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { addTaskFromInput, planOpenTickets } from "../src/host.js";
+import { addTaskFromInput, planOpenTickets, recordAttempt, sweepDeadRuns } from "../src/host.js";
 import { loadConfig } from "../src/routing.js";
 import { Store } from "../src/store.js";
 
@@ -31,6 +31,58 @@ describe("addTaskFromInput", () => {
     expect((await addTaskFromInput(store, loadConfig(root), "x @vscode", "t")).error).toContain("unknown tool");
     expect((await addTaskFromInput(store, loadConfig(root), "   ", "t")).error).toContain("empty title");
     expect(store.read().tickets).toHaveLength(0);
+  });
+});
+
+describe("failed runs", () => {
+  it("reopens the ticket, drops the dead owner and leaves a trace", async () => {
+    const { store, root } = scratch();
+    await addTaskFromInput(store, loadConfig(root), "build the auth backend", "t");
+    await store.mutate((d) => {
+      d.tickets[0].status = "in_progress";
+      d.tickets[0].owner = "claude-code-99";
+    });
+
+    await recordAttempt(store, "t1", "claude-code", "failed", "exited 1 without closing");
+    const t = store.read().tickets[0];
+    expect(t.status).toBe("open"); // retry is just running again
+    expect(t.owner).toBeUndefined(); // a dead owner must not block the next claim
+    expect(t.attempts).toHaveLength(1);
+    expect(t.attempts![0]).toMatchObject({ target: "claude-code", outcome: "failed" });
+    expect(t.notes.at(-1)!.text).toContain("run failed on claude-code");
+  });
+
+  it("never reopens a ticket that was actually closed", async () => {
+    const { store, root } = scratch();
+    await addTaskFromInput(store, loadConfig(root), "write docs", "t");
+    await store.mutate((d) => {
+      d.tickets[0].status = "closed";
+      d.tickets[0].resolution = "completed";
+    });
+    await recordAttempt(store, "t1", "gemini", "failed", "late exit");
+    expect(store.read().tickets[0].status).toBe("closed");
+  });
+
+  it("sweep only touches tickets whose agent is gone", async () => {
+    const { store, root } = scratch();
+    await addTaskFromInput(store, loadConfig(root), "build the auth backend", "t");
+    await addTaskFromInput(store, loadConfig(root), "write the docs", "t");
+    await store.mutate((d) => {
+      // t1: owner long gone. t2: owner alive right now.
+      d.agents["dead-1"] = { id: "dead-1", tool: "codex", model: "", pid: 1, cwd: ".", lastSeen: new Date(Date.now() - 60 * 60_000).toISOString() };
+      d.agents["live-1"] = { id: "live-1", tool: "gemini", model: "", pid: 2, cwd: ".", lastSeen: new Date().toISOString() };
+      d.tickets[0].status = "in_progress";
+      d.tickets[0].owner = "dead-1";
+      d.tickets[1].status = "in_progress";
+      d.tickets[1].owner = "live-1";
+    });
+
+    const swept = await sweepDeadRuns(store);
+    expect(swept.map((s) => s.id)).toEqual(["t1"]);
+    const after = store.read().tickets;
+    expect(after[0].status).toBe("open");
+    expect(after[1].status).toBe("in_progress"); // a working agent is left alone
+    expect(swept[0].target).toBe("claude-code"); // the target it was routed to
   });
 });
 

@@ -28,6 +28,19 @@ export interface TicketNote {
   ts: string;
 }
 
+/**
+ * One dispatch of a ticket and how it ended. A run that dies without closing its ticket
+ * used to leave no trace at all, so the router only ever learned from successes - which is
+ * why its tables read like nothing has ever gone wrong.
+ */
+export interface RunAttempt {
+  /** tool or tool:model, the same key routing scores. */
+  target: string;
+  at: string;
+  outcome: "completed" | "failed";
+  detail?: string;
+}
+
 export interface Ticket {
   id: string;
   title: string;
@@ -41,6 +54,7 @@ export interface Ticket {
   createdAt: string;
   updatedAt: string;
   routedTo?: RoutedTo;
+  attempts?: RunAttempt[];
 }
 
 export interface RoutedTo {

@@ -75,8 +75,14 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
   };
 
   for (const t of d.tickets) {
-    if (t.status !== "closed") continue;
     const { category, ruleTool } = categoryOf(t.title, t.desc, config);
+    // A run that died is evidence regardless of where the ticket ended up, and it is the
+    // only negative signal most boards ever produce - without it the router just learns
+    // that whoever ran first is best.
+    for (const a of t.attempts ?? []) {
+      if (a.outcome === "failed") bump(category, ruleTool, a.target, "losses");
+    }
+    if (t.status !== "closed") continue;
     for (const n of t.notes) {
       const m = n.text.match(/^takeover from '([^']+)'/);
       if (m) bump(category, ruleTool, agentTarget(d, m[1]), "losses");

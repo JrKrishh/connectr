@@ -199,6 +199,61 @@ describe("model-level learning", () => {
   });
 });
 
+describe("failure as routing data", () => {
+  it("counts a failed run as a loss even though the ticket is still open", () => {
+    const d = data([
+      {
+        ...closedTicket("t1", "write the guide docs", "gemini-1"),
+        status: "open",
+        resolution: undefined,
+        owner: undefined,
+        attempts: [{ target: "gemini", at: new Date().toISOString(), outcome: "failed", detail: "exited 1" }],
+      } as Ticket,
+    ]);
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["gemini"].losses).toBe(1);
+    expect(c.stats["gemini"].wins).toBe(0);
+  });
+
+  it("routes away from what keeps failing", () => {
+    // gemini is the rule tool for docs, but it has died three times and claude-code has
+    // finished the work - exactly the signal the board could not record before.
+    const fail = (id: string, title: string): Ticket =>
+      ({
+        ...closedTicket(id, title, "claude-code-11"),
+        attempts: [
+          { target: "gemini", at: new Date().toISOString(), outcome: "failed", detail: "exited 1" },
+          { target: "claude-code", at: new Date().toISOString(), outcome: "completed" },
+        ],
+      }) as Ticket;
+    const d = data([fail("t1", "write the guide docs"), fail("t2", "update the readme"), fail("t3", "write user docs")]);
+
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["gemini"].losses).toBe(3);
+    expect(c.learned).toBe(true);
+    expect(c.pick).toBe("claude-code");
+    expect(resolveToolSmart("write the user guide docs", "", d, config).tool).toBe("claude-code");
+  });
+
+  it("a tool that failed once but usually succeeds still keeps its category", () => {
+    const ok = (id: string, title: string): Ticket =>
+      ({ ...closedTicket(id, title, "gemini-1"), attempts: [{ target: "gemini", at: "x", outcome: "completed" }] }) as Ticket;
+    const d = data([
+      ok("t1", "write the guide docs"),
+      ok("t2", "update the readme"),
+      ok("t3", "write user docs"),
+      {
+        ...closedTicket("t4", "more docs", "gemini-1"),
+        attempts: [{ target: "gemini", at: "x", outcome: "failed" }],
+      } as Ticket,
+    ]);
+    const c = learnRoutes(d, config).get(DOCS_RULE)!;
+    expect(c.stats["gemini"].wins).toBe(4);
+    expect(c.stats["gemini"].losses).toBe(1);
+    expect(c.pick).toBe("gemini"); // one bad run does not lose the category
+  });
+});
+
 describe("resolveToolSmart", () => {
   it("routes by learned override when evidence exists, else by rule", () => {
     const learned = data([

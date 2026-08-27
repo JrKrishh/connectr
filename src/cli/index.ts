@@ -7,7 +7,7 @@ import { ISOLATIONS, PERMISSION_MODES, loadConfig, saveConfig, type Isolation, t
 import { isGitRepo, listWorktrees, mergeWorktree } from "../worktree.js";
 import { MODE_INFO, toolRegistry } from "../tools.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
-import { planIntent, planOpenTickets, prepareWorkspace } from "../host.js";
+import { planIntent, planOpenTickets, prepareWorkspace, recordAttempt, sweepDeadRuns } from "../host.js";
 import { plannerTicket } from "../planner.js";
 import { MIN_EVIDENCE, learnRoutes, resolveToolSmart } from "../learn.js";
 import { launchTicket, toolKnown } from "../spawn.js";
@@ -379,9 +379,26 @@ program
         `launched ${t.id} -> ${tool}${model ? ` (${model})` : ""} (pid ${child.pid})` +
           (ws.worktree ? `\n          tree ${ws.worktree}` : "")
       );
-      return child;
+      return { child, ticket: t };
     });
-    await Promise.all(children.map((c) => (c ? new Promise((r) => c.on("close", r)) : Promise.resolve())));
+    // A child that exits without its ticket closed is a failed run. Record it as an
+    // attempt so routing learns from it, and reopen the ticket so a retry is just
+    // running again - otherwise the board sits stuck until the liveness steal.
+    await Promise.all(
+      children.map(async (entry) => {
+        if (!entry?.child) return;
+        const code = await new Promise<number | null>((r) => entry.child!.on("close", (c) => r(c)));
+        const fresh = new Store().read().tickets.find((x) => x.id === entry.ticket.id);
+        const rt = entry.ticket.routedTo!;
+        const target = rt.model ? `${rt.tool}:${rt.model}` : rt.tool;
+        if (fresh && fresh.status !== "closed") {
+          await recordAttempt(new Store(), entry.ticket.id, target, "failed", `exited ${code ?? "?"} without closing`);
+          console.log(`${entry.ticket.id}: ${target} exited without closing the ticket - reopened, counted as a loss`);
+        } else {
+          await recordAttempt(new Store(), entry.ticket.id, target, "completed");
+        }
+      })
+    );
     console.log("\n=== board after dispatch ===");
     const after = new Store().read();
     for (const t of after.tickets) {
@@ -403,6 +420,19 @@ program
     console.log(`tickets: ${d.tickets.filter((t) => t.status !== "closed").length} open / ${d.tickets.length} total`);
     console.log(`facts : ${d.facts.length}`);
     console.log(`claims: ${d.claims.length}`);
+  });
+
+program
+  .command("sweep")
+  .description("Reopen tickets whose agent is gone, and count those runs as failures")
+  .action(async () => {
+    const swept = await sweepDeadRuns(new Store());
+    if (swept.length === 0) {
+      console.log("nothing stuck - every in-progress ticket has a live agent");
+      return;
+    }
+    for (const s of swept) console.log(`reopened ${s.id} (${s.target} is gone) - counted as a loss`);
+    console.log(`\n${swept.length} ticket(s) back on the board. Retry with: connectr run`);
   });
 
 program
@@ -526,9 +556,10 @@ program
     const store = new Store();
     const config = loadConfig(process.cwd());
     const d = store.read();
-    const closed = d.tickets.filter((t) => t.status === "closed").length;
     const table = learnRoutes(d, config);
-    console.log(`learned routing from ${closed} closed ticket(s) - an override needs ${MIN_EVIDENCE}+ outcomes in a category\n`);
+    // Outcomes, not closed tickets: a run that failed on an open ticket is evidence too.
+    const outcomes = [...table.values()].reduce((n, c) => n + c.evidence, 0);
+    console.log(`learned routing from ${outcomes} outcome(s) - an override needs ${MIN_EVIDENCE}+ in a category\n`);
     if (table.size === 0) {
       console.log("no outcomes yet - close some tickets and come back");
       return;

@@ -172,6 +172,26 @@ one look away. Only `claude-code`, `codex` and `gemini` are verified against rea
 here — treat any preset you find (including the one above) as a starting point to check on
 your own machine.
 
+## When a run fails
+
+An agent that dies without closing its ticket used to leave it stuck `in_progress` until
+the liveness steal, and taught the router nothing - which is why learned tables read like
+nothing had ever gone wrong.
+
+Now a failed run is recorded on the ticket as an attempt, the ticket is reopened and its
+dead owner dropped, and the failure counts as a **loss** for that tool in routing. So
+retrying is just running again, and the router moves away from whatever actually fails:
+
+```bash
+connectr run      # a child that exits without closing -> recorded, reopened
+connectr sweep    # same, for detached runs whose agent is simply gone
+connectr routes   # the losses now show up here
+```
+
+There is no separate retry logic: because failures are scored like any other outcome,
+the next `connectr run` re-routes on the evidence. One bad run does not lose a category -
+an override still needs 3+ outcomes and a genuinely better target.
+
 ## Running agents in parallel
 
 `claim_files` only *warns* another agent off a path. Two agents in one working tree can
