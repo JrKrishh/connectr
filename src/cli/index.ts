@@ -47,7 +47,7 @@ const program = new Command();
 program
   .name("connectr")
   .description("Shared brain for AI coding agents - one MCP board, memory and file-claims across Claude Code, Codex, Cursor, Kiro, Gemini CLI and Antigravity.")
-  .version("0.1.0");
+  .version(JSON.parse(fs.readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version);
 
 program
   .command("serve")
