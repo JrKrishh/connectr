@@ -254,6 +254,28 @@ export const UI_HTML = `<!doctype html>
   .pal-foot{border-top:1px solid var(--border);padding:8px 14px;
     font-family:var(--mono);font-size:10.5px;color:var(--faint)}
 
+  /* settings */
+  .tag.mode-auto,.tag.mode-safe,.tag.mode-yolo{cursor:pointer}
+  .tag.clickable:hover{border-color:var(--accent);color:var(--accent)}
+  .set-h{padding:16px 18px 12px;border-bottom:1px solid var(--border)}
+  .set-h h2{margin:0 0 3px;font-size:16px;font-weight:600;letter-spacing:-.01em}
+  .set-h p{margin:0;font-size:12.5px;color:var(--muted)}
+  .set-body{padding:12px;max-height:56vh;overflow:auto}
+  .mode{display:flex;gap:11px;align-items:flex-start;padding:11px 12px;border-radius:var(--r-sm);
+    border:1px solid var(--border);margin-bottom:8px;cursor:pointer;background:var(--bg)}
+  .mode.on{border-color:var(--accent);background:var(--accent-dim)}
+  .mode .dotr{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--faint);flex:none;margin-top:2px}
+  .mode.on .dotr{border-color:var(--accent);box-shadow:inset 0 0 0 3px var(--accent)}
+  .mode .m-t{font-size:13.5px;font-weight:600}
+  .mode .m-b{font-size:12.5px;color:var(--muted);line-height:1.5}
+  .mode.on .m-b{color:var(--ink)}
+  .set-flags{margin-top:12px;border-top:1px solid var(--border);padding-top:12px}
+  .set-flags .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+  .flagrow{display:flex;gap:10px;align-items:baseline;padding:4px 0;font-size:12.5px}
+  .flagrow .ft{font-family:var(--mono);font-size:11.5px;color:var(--accent);flex:none;min-width:88px}
+  .flagrow .ff{font-family:var(--mono);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
+
   #toast{position:fixed;left:50%;bottom:104px;transform:translateX(-50%) translateY(8px);
     background:var(--raised);border:1px solid var(--border);color:var(--ink);
     padding:9px 15px;border-radius:999px;font-size:12.5px;box-shadow:var(--shadow);
@@ -345,6 +367,22 @@ export const UI_HTML = `<!doctype html>
       </div>
     </div>
   </main>
+</div>
+<div class="pal" id="settings" hidden>
+  <div class="pal-box">
+    <div class="set-h">
+      <h2>Permission mode</h2>
+      <p>Set it once here. Every tool ConnectR dispatches is launched in its own equivalent.</p>
+    </div>
+    <div class="set-body">
+      <div id="modeList"></div>
+      <div class="set-flags">
+        <div class="lbl">What each tool gets in this mode</div>
+        <div id="modeFlags"></div>
+      </div>
+    </div>
+    <div class="pal-foot">click a mode to apply it &middot; esc close</div>
+  </div>
 </div>
 <div class="pal" id="palette" hidden>
   <div class="pal-box">
@@ -787,6 +825,54 @@ function doDispatch(){
     }).catch(function(){toast("dispatch failed",true);});
 }
 
+/* ---------- settings ----------
+   A mode is only meaningful if you can see what it does, so the panel shows the flags
+   every dispatchable tool will actually receive in whichever mode is selected. */
+var setData=null, setPick=null;
+
+function setOpen(){
+  fetch("/api/settings").then(function(r){return r.json();}).then(function(d){
+    setData=d; setPick=d.permissionMode;
+    setRender();
+    el("settings").hidden=false;
+  }).catch(function(){toast("could not read settings",true);});
+}
+function setClose(){el("settings").hidden=true;}
+function setRender(){
+  if(!setData)return;
+  el("modeList").innerHTML=setData.modes.map(function(m){
+    return '<div class="mode'+(m.id===setPick?" on":"")+'" data-mode="'+esc(m.id)+'">'+
+      '<span class="dotr"></span><span><span class="m-t">'+esc(m.title)+
+      (m.id===setData.permissionMode?" &middot; current":"")+'</span>'+
+      '<div class="m-b">'+esc(m.blurb)+"</div></span></div>";
+  }).join("");
+  el("modeFlags").innerHTML=setData.tools.map(function(t){
+    var f=(t.flags[setPick]||[]).join(" ");
+    return '<div class="flagrow"><span class="ft">'+esc(t.tool)+'</span>'+
+      '<span class="ff">'+esc(f||"no extra flags")+"</span></div>";
+  }).join("")||'<div class="flagrow"><span class="ff">no dispatchable tools</span></div>';
+}
+function setApply(mode){
+  setPick=mode; setRender();
+  fetch("/api/settings",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({permissionMode:mode})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){toast(d.error,true);return;}
+      setData=d; setPick=d.permissionMode; setRender();
+      toast("permission mode is now "+d.permissionMode+" - every dispatched tool follows it");
+      refresh();
+    }).catch(function(){toast("could not save the mode",true);});
+}
+el("modeList").addEventListener("click",function(e){
+  var row=e.target.closest?e.target.closest(".mode"):null;
+  if(row)setApply(row.getAttribute("data-mode"));
+});
+el("settings").addEventListener("click",function(e){if(e.target===el("settings"))setClose();});
+el("mode").addEventListener("click",setOpen);
+el("mode").classList.add("clickable");
+el("mode").title="Permission mode - click to change";
+
 /* ---------- desktop shell ----------
    The Electron preload exposes window.connectr to whatever page it loads, including this
    one - so the dashboard can offer a way back to the picker and a Ctrl+K switcher when it
@@ -868,6 +954,8 @@ document.addEventListener("click",function(e){
 document.addEventListener("keydown",function(e){
   var typing=document.activeElement&&document.activeElement.tagName==="INPUT";
   if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();palOpen();return;}
+  if((e.ctrlKey||e.metaKey)&&(e.key===","||e.key==="<")){e.preventDefault();setOpen();return;}
+  if(!el("settings").hidden){if(e.key==="Escape")setClose();return;}
   if((e.ctrlKey||e.metaKey)&&(e.key==="o"||e.key==="O")&&SHELL){e.preventDefault();window.connectr.goHome();return;}
   if(!el("palette").hidden)return; // the palette owns the keyboard while it is open
   if(e.key==="Escape"){

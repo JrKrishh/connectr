@@ -174,25 +174,27 @@ your own machine.
 
 ## Dispatch permission modes
 
-Dispatched agents run under a per-project profile (default **auto** — never yolo unless you say so):
+One setting decides how much every dispatched agent may do, and ConnectR launches each
+tool in *its own* equivalent of that mode - you set it once, not per tool.
+
+Change it from the dashboard (click the mode chip, or press `Ctrl+,`), or from the CLI:
 
 ```bash
-connectr init --mode safe|auto|yolo    # saved to .connectr/config.json
+connectr mode            # show the current mode and what each tool gets
+connectr mode safe       # set it
 ```
 
-| Mode | Meaning | claude-code | codex | gemini |
-|---|---|---|---|---|
-| `safe` | read + plan + shared brain; writes blocked | `--allowedTools mcp__connectr` | `--sandbox read-only` | `--approval-mode default` |
-| `auto` | edits allowed, everything else stays gated | `--permission-mode acceptEdits` + brain access | `--full-auto` | `--approval-mode auto_edit` |
-| `yolo` | no gates (the old behavior, now opt-in) | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` | `--approval-mode yolo` |
+```
+safe - Agents can read the repo, plan, and use the shared brain. Edits and commands are blocked.
 
-In `safe`/`auto`, actions a tool's own settings don't allow simply fail rather than prompt —
-non-interactive agents can't answer prompts. Allowlist project-specific commands (test runners
-etc.) in each tool's own settings if you want `auto` agents to verify their work.
+what each dispatchable tool is launched with:
+  claude-code   --allowedTools mcp__connectr
+  codex         --sandbox read-only
+  gemini        --approval-mode default
+```
 
-Restart your coding tools so they pick up the new MCP config. Then just tell any agent:
-
-> "Use connectr: whoami, check the board, claim a ticket and start."
+The settings panel shows the same table live, so you can see exactly what a mode does to
+every tool before you commit to it. It is stored per project in `.connectr/config.json`.
 
 ## The 10 MCP tools
 

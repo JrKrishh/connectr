@@ -159,6 +159,55 @@ describe("connectr ui server", () => {
     expect(res.status).toBe(404);
   });
 
+  it("reports the mode and exactly what each tool gets in it", async () => {
+    const s = await (await fetch(base + "/api/settings")).json();
+    expect(s.permissionMode).toBe("auto");
+    expect(s.modes.map((m: { id: string }) => m.id)).toEqual(["safe", "auto", "yolo"]);
+    for (const m of s.modes) expect(m.blurb.length).toBeGreaterThan(20);
+
+    const byTool = Object.fromEntries(s.tools.map((t: { tool: string }) => [t.tool, t]));
+    // participants are not dispatched, so a mode says nothing about them
+    expect(byTool["cursor"]).toBeUndefined();
+    // the whole point: one mode, each tool launched in its own equivalent
+    expect(byTool["claude-code"].flags.auto).toContain("acceptEdits");
+    expect(byTool["codex"].flags.auto).toContain("--full-auto");
+    expect(byTool["gemini"].flags.auto).toContain("auto_edit");
+    expect(byTool["codex"].flags.safe).toContain("read-only");
+    expect(byTool["claude-code"].flags.yolo).toContain("--dangerously-skip-permissions");
+  });
+
+  it("changes the mode and persists it to the project config", async () => {
+    const res = await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ permissionMode: "safe" }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).permissionMode).toBe("safe");
+
+    // it must survive on disk, not just in memory
+    const cfg = JSON.parse(fs.readFileSync(path.join(process.env.CONNECTR_STORE!, "config.json"), "utf8"));
+    expect(cfg.permissionMode).toBe("safe");
+    // and every later dispatch must see it
+    expect((await (await fetch(base + "/api/state")).json()).mode).toBe("safe");
+
+    await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ permissionMode: "auto" }),
+    });
+  });
+
+  it("refuses a mode it does not know", async () => {
+    const res = await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ permissionMode: "rampage" }),
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("unknown mode");
+  });
+
   it("blocks log path traversal", async () => {
     const res = await fetch(base + "/api/log?file=..%2F..%2Fstore.json");
     expect(res.status).toBe(404);

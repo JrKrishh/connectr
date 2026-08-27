@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Store, liveAgentIds, nextId } from "../store.js";
 import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
+import { MODE_INFO, toolRegistry } from "../tools.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
 import { planIntent, planOpenTickets } from "../host.js";
 import { plannerTicket } from "../planner.js";
@@ -388,6 +389,30 @@ program
     console.log(`tickets: ${d.tickets.filter((t) => t.status !== "closed").length} open / ${d.tickets.length} total`);
     console.log(`facts : ${d.facts.length}`);
     console.log(`claims: ${d.claims.length}`);
+  });
+
+program
+  .command("mode")
+  .description("Show or set the dispatch permission mode every tool is launched in")
+  .argument("[mode]", "safe | auto | yolo")
+  .action((mode?: string) => {
+    const config = loadConfig(process.cwd());
+    if (mode) {
+      if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
+        console.error(`unknown mode '${mode}' - use safe, auto or yolo`);
+        process.exitCode = 1;
+        return;
+      }
+      config.permissionMode = mode as PermissionMode;
+      saveConfig(process.cwd(), config);
+    }
+    const info = MODE_INFO.find((m) => m.id === config.permissionMode);
+    console.log(`${config.permissionMode}${mode ? " (saved)" : ""} - ${info?.blurb ?? ""}\n`);
+    console.log("what each dispatchable tool is launched with:");
+    for (const t of toolRegistry(config.toolSpecs).filter((x) => x.kind === "dispatch")) {
+      const flags = (t.modes?.[config.permissionMode] ?? []).join(" ");
+      console.log(`  ${t.id.padEnd(13)} ${flags || "no extra flags"}`);
+    }
   });
 
 program

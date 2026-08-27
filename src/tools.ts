@@ -38,6 +38,27 @@ export interface ToolSpec {
 
 const NO_MODES: Record<PermissionMode, string[]> = { safe: [], auto: [], yolo: [] };
 
+// One description of each mode, shared by the CLI and the dashboard so they never drift.
+// The point of a mode is that it is set once and every dispatched tool is launched in its
+// own equivalent of it - see each spec's `modes` below for what that means per tool.
+export const MODE_INFO: { id: PermissionMode; title: string; blurb: string }[] = [
+  {
+    id: "safe",
+    title: "Safe",
+    blurb: "Agents can read the repo, plan, and use the shared brain. Edits and commands are blocked.",
+  },
+  {
+    id: "auto",
+    title: "Auto",
+    blurb: "Agents can edit files on their own. Anything beyond that still hits each tool's own approval.",
+  },
+  {
+    id: "yolo",
+    title: "Yolo",
+    blurb: "No gates anywhere: agents can run any command without asking. Use on repos you can throw away.",
+  },
+];
+
 // Verified against real installs on Windows. Anything not listed here can still be added
 // by the user - see "Add another coding tool" in the README.
 export const BUILTIN_TOOLS: ToolSpec[] = [

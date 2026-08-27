@@ -3,15 +3,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets } from "../host.js";
 import { factKind } from "../memory.js";
-import { loadConfig } from "../routing.js";
+import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
+import { MODE_INFO, toolRegistry } from "../tools.js";
 import { Store, liveAgentIds } from "../store.js";
 import { UI_HTML } from "./page.js";
 
 const dispatched = new Set<string>();
 
+// Config belongs to the project the store belongs to. Reading it from process.cwd()
+// instead silently split the two apart whenever CONNECTR_STORE pointed elsewhere - the
+// board went to one project while its permission mode was read from, and written to,
+// whichever directory the server happened to be launched in.
+function projectRoot(): string {
+  return path.dirname(new Store().dir);
+}
+
 function stateView(): unknown {
   const store = new Store();
-  const config = loadConfig(process.cwd());
+  const config = loadConfig(projectRoot());
   const d = store.read();
   const now = Date.now();
   const live = new Set(liveAgentIds(d));
@@ -177,14 +186,43 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
   if (req.method === "POST" && url.pathname === "/api/task") {
     const body = await readBody(req);
-    const result = await addTaskFromInput(new Store(), loadConfig(process.cwd()), String(body.input ?? ""), "web-host");
+    const result = await addTaskFromInput(new Store(), loadConfig(projectRoot()), String(body.input ?? ""), "web-host");
     json(res, result.error ? 400 : 200, result);
+    return;
+  }
+  if (url.pathname === "/api/settings" && (req.method === "GET" || req.method === "POST")) {
+    const config = loadConfig(projectRoot());
+    if (req.method === "POST") {
+      const body = await readBody(req);
+      const mode = String(body.permissionMode ?? "");
+      if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
+        json(res, 400, { error: `unknown mode '${mode}' - use safe, auto or yolo` });
+        return;
+      }
+      config.permissionMode = mode as PermissionMode;
+      saveConfig(projectRoot(), config);
+    }
+    // Show what the chosen mode actually does to every tool that can be dispatched -
+    // a mode is only meaningful if you can see the flags it hands each one.
+    const dispatchTools = toolRegistry(config.toolSpecs).filter((t) => t.kind === "dispatch");
+    json(res, 200, {
+      permissionMode: config.permissionMode,
+      modes: MODE_INFO,
+      tools: dispatchTools.map((t) => ({
+        tool: t.id,
+        flags: {
+          safe: t.modes?.safe ?? [],
+          auto: t.modes?.auto ?? [],
+          yolo: t.modes?.yolo ?? [],
+        },
+      })),
+    });
     return;
   }
   if (req.method === "POST" && url.pathname === "/api/plan") {
     const body = await readBody(req);
     const store = new Store();
-    const config = loadConfig(process.cwd());
+    const config = loadConfig(projectRoot());
     const result = await planIntent(store, config, String(body.intent ?? ""), "web-host");
     if (result.error) {
       json(res, 400, result);
@@ -200,7 +238,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   if (req.method === "POST" && url.pathname === "/api/dispatch") {
     const body = await readBody(req);
     const store = new Store();
-    const config = loadConfig(process.cwd());
+    const config = loadConfig(projectRoot());
     const plan = await planOpenTickets(store, config, { exclude: dispatched });
     if (body.dry) {
       json(res, 200, {
