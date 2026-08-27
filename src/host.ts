@@ -15,7 +15,7 @@ export interface AddTaskResult {
 }
 
 export async function addTaskFromInput(store: Store, config: ConnectrConfig, raw: string, createdBy: string): Promise<AddTaskResult> {
-  const parsed = parseTaskInput(raw);
+  const parsed = parseTaskInput(raw, (config.toolSpecs ?? []).filter((t) => t.kind === "dispatch").map((t) => t.id));
   if (parsed.error) return { error: parsed.error };
   if (!parsed.title) return { error: "empty title - nothing created" };
   const ticket = await store.mutate((d): Ticket => {
@@ -176,7 +176,14 @@ export function prepareWorkspace(ticketId: string, cwd: string, storeDir: string
   return { cwd: made.worktree.path, env: { CONNECTR_STORE: storeDir }, worktree: made.worktree.path };
 }
 
-export function launchPlanned(plan: Ticket[], cwd: string, storeDir: string, config: ConnectrConfig, detach: boolean): LaunchSummary[] {
+export function launchPlanned(
+  plan: Ticket[],
+  cwd: string,
+  storeDir: string,
+  config: ConnectrConfig,
+  detach: boolean,
+  onExit?: (ticket: Ticket, code: number | null) => void
+): LaunchSummary[] {
   const runsDir = path.join(storeDir, "runs");
   return plan.map((t) => {
     const { cwd: workDir, env, worktree, isolationNote } = prepareWorkspace(t.id, cwd, storeDir, config);
@@ -187,6 +194,9 @@ export function launchPlanned(plan: Ticket[], cwd: string, storeDir: string, con
       userTools: config.toolSpecs,
       env,
     });
+    // A detached child still emits close while this process lives, so a long-running
+    // host can reconcile the run the moment the agent exits instead of waiting for a sweep.
+    if (child && onExit) child.on("close", (code) => onExit(t, code));
     return {
       id: t.id,
       tool: t.routedTo!.tool,

@@ -18,12 +18,13 @@ export interface ParsedTaskInput {
 }
 
 // "fix auth flow @codex:gpt-5-codex" -> manual assignment; no @suffix -> auto-route.
-export function parseTaskInput(raw: string): ParsedTaskInput {
+export function parseTaskInput(raw: string, extraTools: string[] = []): ParsedTaskInput {
   const trimmed = raw.trim();
   const m = trimmed.match(/^(.*\S)\s+@([A-Za-z][\w-]*)(?::([\w.:/-]+))?$/);
   if (!m) return { title: trimmed };
   const [, title, tool, model] = m;
-  if (!KNOWN_TOOLS.includes(tool)) {
+  // User-registered tools are as assignable as the built-ins - the registry promise.
+  if (!KNOWN_TOOLS.includes(tool) && !extraTools.includes(tool)) {
     return { title: trimmed, error: `unknown tool '@${tool}' - use @claude-code, @codex or @gemini` };
   }
   return { title: title.trim(), tool, model };
@@ -46,6 +47,8 @@ export interface ConnectrConfig {
   permissionMode: PermissionMode;
   /** "worktree" gives each dispatched ticket its own git worktree and branch. */
   isolation: Isolation;
+  /** The ui host keeps launching queued tickets until the board is clear (default off). */
+  autoContinue?: boolean;
   tools?: string[]; // orchestra selected at `connectr new` (informational)
   planFile?: string; // project brief injected into dispatched agents' prompts
   toolSpecs?: ToolSpec[]; // extra coding tools declared by the user (config "tools" array of objects)
@@ -82,6 +85,7 @@ export function loadConfig(root: string): ConnectrConfig {
           ? { toolSpecs: raw.tools.map(normalizeToolSpec).filter((t: ToolSpec | null): t is ToolSpec => t !== null) }
           : {}),
         ...(typeof raw?.planFile === "string" ? { planFile: raw.planFile } : {}),
+        ...(raw?.autoContinue === true ? { autoContinue: true } : {}),
       };
     } catch {
       /* corrupt config falls through to defaults */
@@ -92,7 +96,16 @@ export function loadConfig(root: string): ConnectrConfig {
 
 export function saveConfig(root: string, config: ConnectrConfig): void {
   fs.mkdirSync(path.join(root, ".connectr"), { recursive: true });
-  fs.writeFileSync(configPath(root), JSON.stringify(config, null, 2) + "\n");
+  // The file's "tools" key holds both selected ids (strings) and user tool declarations
+  // (objects). loadConfig splits them into tools/toolSpecs, so saving has to weave them
+  // back together - otherwise any settings change silently deletes every user-declared tool.
+  const { toolSpecs, tools, ...rest } = config;
+  const merged: unknown[] = [
+    ...(tools ?? []),
+    ...(toolSpecs ?? []).map(({ userDefined: _u, ...spec }) => spec),
+  ];
+  const out = { ...rest, ...(merged.length ? { tools: merged } : {}) };
+  fs.writeFileSync(configPath(root), JSON.stringify(out, null, 2) + "\n");
 }
 
 export function effectiveRules(config: ConnectrConfig): RoutingRule[] {

@@ -1,7 +1,8 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, sweepDeadRuns } from "../host.js";
+import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, recordAttempt, sweepDeadRuns } from "../host.js";
+import type { Ticket } from "../types.js";
 import { diffWorktree, listWorktrees, mergeWorktree, type TreeStatus } from "../worktree.js";
 import { factKind } from "../memory.js";
 import { PERMISSION_MODES, loadConfig, saveConfig, type PermissionMode } from "../routing.js";
@@ -10,6 +11,62 @@ import { Store, liveAgentIds } from "../store.js";
 import { UI_HTML } from "./page.js";
 
 const dispatched = new Set<string>();
+
+// Auto-continue: after this many failed runs a ticket is left for the human. Without a
+// cap the loop would relaunch a doomed ticket forever.
+const MAX_AUTO_ATTEMPTS = 2;
+
+/**
+ * The moment one of our launched agents exits, settle the run: an unclosed ticket is a
+ * failed attempt (recorded, reopened, counted as a routing loss) - the same contract
+ * `connectr run` applies, but for the detached children this host launches.
+ */
+async function reconcile(ticket: Ticket, code: number | null): Promise<void> {
+  const store = new Store();
+  const fresh = store.read().tickets.find((x) => x.id === ticket.id);
+  const rt = ticket.routedTo!;
+  const target = rt.model ? `${rt.tool}:${rt.model}` : rt.tool;
+  if (fresh && fresh.status !== "closed") {
+    await recordAttempt(store, ticket.id, target, "failed", `exited ${code ?? "?"} without closing`);
+    dispatched.delete(ticket.id); // eligible again - routing now knows about the loss
+    const fails = ((store.read().tickets.find((x) => x.id === ticket.id)?.attempts ?? [])).filter(
+      (a) => a.outcome === "failed"
+    ).length;
+    if (fails >= MAX_AUTO_ATTEMPTS && loadConfig(projectRoot()).autoContinue) {
+      await store.mutate((d) => {
+        const t = d.tickets.find((x) => x.id === ticket.id);
+        t?.notes.push({
+          agent: "connectr",
+          text: `${fails} runs have failed - auto-continue is leaving this one for you; press Launch to retry it`,
+          ts: new Date().toISOString(),
+        });
+      });
+    }
+  } else {
+    await recordAttempt(store, ticket.id, target, "completed");
+  }
+}
+
+let autoBusy = false;
+async function autoTick(): Promise<void> {
+  if (autoBusy) return;
+  autoBusy = true;
+  try {
+    const config = loadConfig(projectRoot());
+    if (!config.autoContinue) return;
+    const store = new Store();
+    const plan = (await planOpenTickets(store, config, { exclude: dispatched })).filter(
+      (t) => (t.attempts ?? []).filter((a) => a.outcome === "failed").length < MAX_AUTO_ATTEMPTS
+    );
+    if (!plan.length) return;
+    const launches = launchPlanned(plan, process.cwd(), store.dir, config, true, reconcile);
+    for (const l of launches) if (l.ok) dispatched.add(l.id);
+  } catch {
+    /* a bad tick must not kill the interval */
+  } finally {
+    autoBusy = false;
+  }
+}
 
 // Config belongs to the project the store belongs to. Reading it from process.cwd()
 // instead silently split the two apart whenever CONNECTR_STORE pointed elsewhere - the
@@ -57,6 +114,7 @@ function stateView(): unknown {
     project: path.basename(process.cwd()),
     cwd: process.cwd(),
     mode: config.permissionMode,
+    autoContinue: config.autoContinue === true,
     planFile: config.planFile ?? null,
     agents: Object.values(d.agents)
       .sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen))
@@ -242,12 +300,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const config = loadConfig(projectRoot());
     if (req.method === "POST") {
       const body = await readBody(req);
-      const mode = String(body.permissionMode ?? "");
-      if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
-        json(res, 400, { error: `unknown mode '${mode}' - use safe, auto or yolo` });
-        return;
+      if (body.permissionMode !== undefined) {
+        const mode = String(body.permissionMode);
+        if (!PERMISSION_MODES.includes(mode as PermissionMode)) {
+          json(res, 400, { error: `unknown mode '${mode}' - use safe, auto or yolo` });
+          return;
+        }
+        config.permissionMode = mode as PermissionMode;
       }
-      config.permissionMode = mode as PermissionMode;
+      if (body.autoContinue !== undefined) config.autoContinue = body.autoContinue === true;
       saveConfig(projectRoot(), config);
     }
     // Show what the chosen mode actually does to every tool that can be dispatched -
@@ -255,6 +316,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     const dispatchTools = toolRegistry(config.toolSpecs).filter((t) => t.kind === "dispatch");
     json(res, 200, {
       permissionMode: config.permissionMode,
+      autoContinue: config.autoContinue === true,
       modes: MODE_INFO,
       tools: dispatchTools.map((t) => ({
         tool: t.id,
@@ -278,7 +340,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     }
     // Planning is a normal dispatch: the planner ticket goes out detached and the board
     // shows it working, so the page needs no special "thinking" state.
-    const [launch] = launchPlanned([result.ticket!], process.cwd(), store.dir, config, true);
+    const [launch] = launchPlanned([result.ticket!], process.cwd(), store.dir, config, true, reconcile);
     if (launch.ok) dispatched.add(launch.id);
     json(res, 200, { ticket: result.ticket, launch });
     return;
@@ -295,7 +357,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       });
       return;
     }
-    const launches = launchPlanned(plan, process.cwd(), store.dir, config, true);
+    const launches = launchPlanned(plan, process.cwd(), store.dir, config, true, reconcile);
     for (const l of launches) if (l.ok) dispatched.add(l.id);
     json(res, 200, { mode: config.permissionMode, launches });
     return;
@@ -308,5 +370,7 @@ export function startUi(port: number): http.Server {
     handle(req, res).catch((e) => json(res, 500, { error: (e as Error).message }));
   });
   server.listen(port, "127.0.0.1");
+  const auto = setInterval(autoTick, Number(process.env.CONNECTR_AUTO_TICK ?? 5000));
+  server.on("close", () => clearInterval(auto));
   return server;
 }

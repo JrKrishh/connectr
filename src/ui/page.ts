@@ -52,6 +52,17 @@ export const UI_HTML = `<!doctype html>
   .brand .name{font-weight:650;letter-spacing:-.01em;font-size:15px}
   .brand .name b{color:var(--accent);font-weight:650}
   .proj{padding:0 16px 12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .tag.auto{color:var(--accent);border-color:var(--accent-dim);background:var(--accent-dim)}
+  .set-auto{display:flex;align-items:center;gap:12px;justify-content:space-between;
+    padding:12px 18px;border-top:1px solid var(--border);font-size:13px}
+  .set-auto .m-b{max-width:420px}
+  .switch{position:relative;flex:none;width:38px;height:21px;border-radius:999px;cursor:pointer;
+    border:1px solid var(--border);background:var(--raised);transition:background .15s ease}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:15px;height:15px;
+    border-radius:50%;background:var(--faint);transition:transform .15s ease,background .15s ease}
+  .switch.on{background:var(--accent);border-color:var(--accent)}
+  .switch.on::after{transform:translateX(17px);background:var(--accent-ink)}
+
   .bell{margin-left:auto;display:inline-flex;align-items:center;background:none;border:none;
     padding:3px;cursor:pointer;color:var(--faint);border-radius:6px}
   .bell:hover{color:var(--muted)}
@@ -342,6 +353,7 @@ export const UI_HTML = `<!doctype html>
       <span class="pname" id="proj"></span>
       <span class="tag" id="mode"></span>
       <span class="tag" id="plan"></span>
+      <span class="tag auto clickable" id="autoTag" hidden title="Auto-continue is on - queued tasks launch on their own"></span>
       <button class="bell" id="bell" title="Notify me when agents finish or need review"></button>
     </div>
     <div class="body scroll">
@@ -415,6 +427,11 @@ export const UI_HTML = `<!doctype html>
         <div class="lbl">What each tool gets in this mode</div>
         <div id="modeFlags"></div>
       </div>
+    </div>
+    <div class="set-auto">
+      <span><span class="m-t">Auto-continue</span>
+        <div class="m-b">Keep launching queued tasks until the board is clear. A task that fails twice is left for you.</div></span>
+      <button class="switch" id="autoBtn"></button>
     </div>
     <div class="pal-foot">click a mode to apply it &middot; esc close</div>
   </div>
@@ -704,6 +721,7 @@ function renderSide(s){
   el("proj").title=s.cwd;
   var m=el("mode"); m.textContent="mode "+s.mode; m.className="tag "+s.mode;
   var p=el("plan"); p.textContent=s.planFile?s.planFile:"no brief"; p.className="tag";
+  var ac=el("autoTag"); ac.hidden=!s.autoContinue; ac.textContent="auto-continue";
 
   var live=s.agents.filter(function(a){return a.live;});
   el("agentN").textContent=live.length?live.length+" live":"";
@@ -1038,6 +1056,21 @@ function setRender(){
     return '<div class="flagrow"><span class="ft">'+esc(t.tool)+'</span>'+
       '<span class="ff">'+esc(f||"no extra flags")+"</span></div>";
   }).join("")||'<div class="flagrow"><span class="ff">no launchable tools</span></div>';
+  el("autoBtn").className="switch"+(setData.autoContinue?" on":"");
+}
+function autoToggle(){
+  if(!setData)return;
+  var want=!setData.autoContinue;
+  fetch("/api/settings",{method:"POST",headers:{"content-type":"application/json"},
+    body:JSON.stringify({autoContinue:want})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){toast(d.error,true);return;}
+      setData=d; setRender();
+      toast(d.autoContinue?"auto-continue on - queued tasks will launch on their own"
+        :"auto-continue off - nothing launches until you press Launch");
+      refresh();
+    }).catch(function(){toast("could not save the setting",true);});
 }
 function setApply(mode){
   setPick=mode; setRender();
@@ -1056,6 +1089,8 @@ el("modeList").addEventListener("click",function(e){
   if(row)setApply(row.getAttribute("data-mode"));
 });
 el("settings").addEventListener("click",function(e){if(e.target===el("settings"))setClose();});
+el("autoBtn").addEventListener("click",autoToggle);
+el("autoTag").addEventListener("click",setOpen);
 el("mode").addEventListener("click",setOpen);
 el("mode").classList.add("clickable");
 el("mode").title="Permission mode - click to change";

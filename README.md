@@ -75,6 +75,14 @@ notifications for the three moments that matter: an agent finished, an agent die
 ticket has commits waiting for review. Clicking one takes you straight to that ticket.
 Nothing fires while the window is focused.
 
+Turn on **auto-continue** (the switch in settings, or `connectr auto on`) and you don't
+have to press Launch either: while the dashboard runs, queued tickets launch on their
+own — including the ones a planner agent just created, so `connectr plan` becomes
+describe → done. The host watches every agent it launches; one that exits without
+closing its ticket is recorded as a failed run (a routing loss) and the ticket reopens
+for another try. After two failed runs a ticket is left for you, with a note saying so —
+the loop never burns your subscription on a doomed task.
+
 `connectr plan` is the front door: you describe an outcome, and ConnectR parks it on the
 board as a planner ticket and dispatches it. The agent that claims it reads your repo,
 the board and the shared memory, then creates the real tickets — titled so they route

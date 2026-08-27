@@ -23,6 +23,9 @@ beforeAll(async () => {
   prevStore = process.env.CONNECTR_STORE;
   root = fs.mkdtempSync(path.join(os.tmpdir(), "connectr-ui-"));
   process.env.CONNECTR_STORE = path.join(root, ".connectr");
+  // This suite's tickets point at real tools; park the auto-continue tick far away so a
+  // momentary autoContinue=true in the settings test can never launch one.
+  process.env.CONNECTR_AUTO_TICK = "3600000";
   // The review endpoints work against git, so the fixture project is a real repo.
   git(root, "init");
   git(root, "config", "user.email", "test@example.com");
@@ -38,6 +41,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (prevStore === undefined) delete process.env.CONNECTR_STORE;
   else process.env.CONNECTR_STORE = prevStore;
+  delete process.env.CONNECTR_AUTO_TICK;
   await new Promise<void>((r) => server.close(() => r()));
 });
 
@@ -225,6 +229,31 @@ describe("connectr ui server", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ permissionMode: "auto" }),
     });
+  });
+
+  it("stores auto-continue separately from the mode", async () => {
+    const on = await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ autoContinue: true }),
+    });
+    expect((await on.json()).autoContinue).toBe(true);
+    expect((await (await fetch(base + "/api/state")).json()).autoContinue).toBe(true);
+
+    // changing only the mode must not clobber it
+    await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ permissionMode: "auto" }),
+    });
+    expect((await (await fetch(base + "/api/settings")).json()).autoContinue).toBe(true);
+
+    const off = await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ autoContinue: false }),
+    });
+    expect((await off.json()).autoContinue).toBe(false);
   });
 
   it("refuses a mode it does not know", async () => {

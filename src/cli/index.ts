@@ -501,6 +501,29 @@ program
   });
 
 program
+  .command("auto")
+  .description("Show or set auto-continue: the ui host keeps launching queued tickets until the board is clear")
+  .argument("[state]", "on | off")
+  .action((state?: string) => {
+    const root = path.dirname(new Store().dir);
+    const config = loadConfig(root);
+    if (state) {
+      if (state !== "on" && state !== "off") {
+        console.error(`unknown state '${state}' - use on or off`);
+        process.exitCode = 1;
+        return;
+      }
+      config.autoContinue = state === "on";
+      saveConfig(root, config);
+    }
+    console.log(
+      config.autoContinue
+        ? `on${state ? " (saved)" : ""} - while connectr ui runs, queued tickets launch on their own; a ticket that fails twice is left for you`
+        : `off${state ? " (saved)" : ""} - nothing launches until you press Launch or run connectr run`
+    );
+  });
+
+program
   .command("mode")
   .description("Show or set the dispatch permission mode every tool is launched in")
   .argument("[mode]", "safe | auto | yolo")
