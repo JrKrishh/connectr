@@ -559,19 +559,19 @@ program
     const table = learnRoutes(d, config);
     // Outcomes, not closed tickets: a run that failed on an open ticket is evidence too.
     const outcomes = [...table.values()].reduce((n, c) => n + c.evidence, 0);
-    console.log(`learned routing from ${outcomes} outcome(s) - an override needs ${MIN_EVIDENCE}+ in a category\n`);
+    console.log(`learned routing from ${outcomes} run(s) on record - an override needs ${MIN_EVIDENCE}+ in a category\n`);
     if (table.size === 0) {
-      console.log("no outcomes yet - close some tickets and come back");
+      console.log("no runs on record yet - close some tickets and come back");
       return;
     }
     for (const c of table.values()) {
       const terms = c.category.split("|");
       const label = c.category === "default" ? "default" : terms.slice(0, 3).join("|") + (terms.length > 3 ? "|…" : "");
       const stats = Object.entries(c.stats)
-        .map(([tool, s]) => `${tool} ${s.wins}w/${s.losses}l`)
+        .map(([tool, s]) => `${tool} ${s.wins}-${s.losses}`)
         .join(" · ");
       console.log(`${c.learned ? "◆" : "·"} ${label}`);
-      console.log(`    rule says ${c.ruleTool} · outcomes: ${stats || "none"}`);
+      console.log(`    rule says ${c.ruleTool} · record: ${stats || "none"}`);
       console.log(`    pick: ${c.pick}${c.learned ? "  << LEARNED override" : ""} (${c.reason})`);
     }
   });

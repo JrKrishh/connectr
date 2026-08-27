@@ -124,21 +124,21 @@ export function learnRoutes(d: StoreData, config: ConnectrConfig): Map<string, C
       c.learned = true;
       const s = c.stats[best]!;
       const [rKey, r] = ruleEntries.sort((a, b) => rateOf(b[1]) - rateOf(a[1]))[0];
-      c.reason = `${best} ${s.wins}w/${s.losses}l beats ${rKey} ${r.wins}w/${r.losses}l here (${c.evidence} outcomes)`;
+      c.reason = `${best} has gone ${s.wins}-${s.losses} on tasks like this, ahead of ${rKey} at ${r.wins}-${r.losses} (${c.evidence} runs on record)`;
     } else if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool && ruleToolTried) {
       // Same tool, better model: keep the tool but adopt the model the board favours.
       c.pick = best;
       c.learned = true;
       const s = c.stats[best]!;
-      c.reason = `${best} ${s.wins}w/${s.losses}l is the strongest ${c.ruleTool} here (${c.evidence} outcomes)`;
+      c.reason = `${best} has gone ${s.wins}-${s.losses} - the best ${c.ruleTool} showing here (${c.evidence} runs on record)`;
     } else if (c.evidence >= MIN_EVIDENCE && best !== c.ruleTool) {
       c.pick = c.ruleTool;
       c.learned = false;
-      c.reason = `${c.ruleTool} untried here - keeping the rule so it can prove itself (${c.evidence} outcomes for others)`;
+      c.reason = `${c.ruleTool} has not been tried on this kind of task yet - keeping it so it gets a shot (${c.evidence} runs by others)`;
     } else {
       c.pick = c.ruleTool;
       c.learned = false;
-      c.reason = c.evidence > 0 ? `rule holds (${c.evidence} outcomes, no stronger tool yet)` : "no outcomes yet";
+      c.reason = c.evidence > 0 ? `keeping ${c.ruleTool} - nothing has done better across ${c.evidence} run${c.evidence === 1 ? "" : "s"}` : "no runs on record yet";
     }
   }
   return table;
@@ -163,6 +163,6 @@ export function resolveToolSmart(title: string, desc: string, d: StoreData, conf
     tool: ruleTool,
     via: category === "default" ? "default" : "rule",
     category,
-    reason: learning?.reason ?? "no outcomes yet",
+    reason: learning?.reason ?? "no runs on record yet",
   };
 }

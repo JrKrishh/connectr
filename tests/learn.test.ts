@@ -106,7 +106,7 @@ describe("learnRoutes", () => {
     expect(c.stats["gemini"]).toBeUndefined();
     expect(c.learned).toBe(false);
     expect(c.pick).toBe("gemini");
-    expect(c.reason).toContain("untried");
+    expect(c.reason).toContain("not been tried");
   });
 
   it("does not override below the evidence threshold", () => {
@@ -166,7 +166,7 @@ describe("model-level learning", () => {
     expect(smart.tool).toBe("gemini");
     expect(smart.model).toBe("gemini-2.5-pro"); // same tool, model chosen from evidence
     expect(smart.via).toBe("learned");
-    expect(smart.reason).toContain("strongest gemini");
+    expect(smart.reason).toContain("best gemini");
   });
 
   it("counts a model-level routing miss as a loss for the model that was asked", () => {
@@ -264,7 +264,7 @@ describe("resolveToolSmart", () => {
     const smart = resolveToolSmart("summarize the research docs", "", learned, config);
     expect(smart.tool).toBe("claude-code");
     expect(smart.via).toBe("learned");
-    expect(smart.reason).toContain("beats gemini");
+    expect(smart.reason).toContain("ahead of gemini");
 
     const fresh = resolveToolSmart("summarize the research docs", "", data([]), config);
     expect(fresh).toMatchObject({ tool: "gemini", via: "rule" });

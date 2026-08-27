@@ -392,12 +392,12 @@ export const UI_HTML = `<!doctype html>
           </label>
           <button class="btn primary" id="planBtn">Plan it</button>
           <button class="btn" id="addBtn">Add as one task</button>
-          <button class="btn" id="dispatchBtn">Dispatch</button>
+          <button class="btn" id="dispatchBtn">Launch</button>
         </div>
         <div class="hint">
           <span><b>Plan it</b> sends your description to a planner agent that fills the board.
             <b>Add as one task</b> creates exactly what you typed - assign it with <code>@codex</code> or <code>@gemini:gemini-2.5-pro</code>.</span>
-          <span><span class="kbd">/</span> focus &middot; <span class="kbd">enter</span> plan &middot; <span class="kbd">d</span> dispatch &middot; <span class="kbd">esc</span> back</span>
+          <span><span class="kbd">/</span> focus &middot; <span class="kbd">enter</span> plan &middot; <span class="kbd">d</span> launch &middot; <span class="kbd">esc</span> back</span>
         </div>
       </div>
     </div>
@@ -407,7 +407,7 @@ export const UI_HTML = `<!doctype html>
   <div class="pal-box">
     <div class="set-h">
       <h2>Permission mode</h2>
-      <p>Set it once here. Every tool ConnectR dispatches is launched in its own equivalent.</p>
+      <p>Set it once here. Every tool ConnectR launches gets its own equivalent of it.</p>
     </div>
     <div class="set-body">
       <div id="modeList"></div>
@@ -754,20 +754,20 @@ function renderDetail(s){
   if(t.updatedAt)h+='<span>updated '+esc(rel(t.updatedAt))+'</span>';
   h+='</div>';
   if(t.routedTo&&t.routedTo.reason)
-    h+='<div class="why"><span class="lbl">routing</span><span>'+esc(t.routedTo.reason)+'</span></div>';
+    h+='<div class="why"><span class="lbl">why this tool</span><span>'+esc(t.routedTo.reason)+'</span></div>';
 
   // The closing move: work waiting in this ticket's worktree, reviewable and mergeable
   // right here instead of via the CLI.
   if(t.tree&&t.tree.commits>0){
     h+='<div class="review"><span class="rv-t"><b>'+t.tree.commits+' commit'+(t.tree.commits===1?"":"s")+
-      '</b> from this ticket waiting to merge'+(t.tree.dirty?' &middot; plus uncommitted leftovers':'')+
+      '</b> from this ticket waiting to merge'+(t.tree.dirty?' &middot; plus unsaved edits left behind':'')+
       '</span><button id="diffBtn">'+(diffMode?"View transcript":"View changes")+'</button>'+
       '<button class="go" id="mergeBtn">Merge</button></div>';
   }else if(t.tree&&t.tree.dirty){
-    h+='<div class="review warn"><span class="rv-t"><b>uncommitted changes</b> sit in the worktree - nothing committed to merge yet</span></div>';
+    h+='<div class="review warn"><span class="rv-t"><b>unsaved edits</b> sit in this ticket&#39;s workspace - nothing to merge yet</span></div>';
   }
   if(t.status==="in_progress"&&t.owner&&!s.agents.some(function(a){return a.id===t.owner&&a.live;})){
-    h+='<div class="review warn"><span class="rv-t">The agent on this ticket looks <b>gone</b> - reopen it and dispatch again</span>'+
+    h+='<div class="review warn"><span class="rv-t">The agent on this ticket looks <b>gone</b> - reopen it and launch again</span>'+
       '<button class="go" id="reopenBtn">Reopen</button></div>';
   }
   h+='</div>';
@@ -781,7 +781,7 @@ function renderDetail(s){
     }).join("")+'</div>';
   }
   h+='<div class="term"><div class="term-h">'+I.term+'<span class="f">'+
-    esc(diffMode?("changes on connectr/"+t.id):(t.runs&&t.runs.length?(selLog||t.runs[0]):"board events only - no agent has run yet"))+'</span>'+
+    esc(diffMode?("changes on connectr/"+t.id):(t.runs&&t.runs.length?(selLog||t.runs[0]):"activity so far - no agent has run yet"))+'</span>'+
     (t.status==="in_progress"&&!diffMode?'<span class="live-b"><span class="dot live"></span>live</span>':'')+
     '</div><div class="tx" id="logtail">'+
     (diffMode
@@ -828,13 +828,13 @@ function overview(s){
       }).join("")+'</div>';
   }else{
     h+='<h1 class="ov-h">'+(open.length?open.length+' task'+(open.length===1?'':'s')+' queued':'Board is clear')+'</h1>'+
-      '<p class="ov-sub">'+(open.length?'Press Dispatch to launch agents on them.':
+      '<p class="ov-sub">'+(open.length?'Press Launch to start agents on them.':
         'Add a task below to get the next one moving.')+'</p>';
     if(open.length){
       h+='<div class="cards">'+open.map(function(t){
         return '<button class="card" data-id="'+esc(t.id)+'"><div class="c-top">'+
           '<span class="tid">'+esc(t.id)+'</span></div><div class="c-t">'+esc(t.title)+'</div>'+
-          '<div class="c-m">'+esc(routeLabel(t)||"unrouted")+'</div></button>';
+          '<div class="c-m">'+esc(routeLabel(t)||"not assigned yet")+'</div></button>';
       }).join("")+'</div>';
     }
   }
@@ -942,7 +942,7 @@ function doMerge(id){
 function doReopen(){
   fetch("/api/sweep",{method:"POST"}).then(function(r){return r.json();}).then(function(d){
     var n=(d.swept||[]).length;
-    toast(n?("reopened "+n+" ticket"+(n===1?"":"s")+" - dispatch to retry"):"nothing to reopen - the agent may still be alive");
+    toast(n?("reopened "+n+" ticket"+(n===1?"":"s")+" - launch again to retry"):"nothing to reopen - the agent may still be alive");
     refresh();
   }).catch(function(){});
 }
@@ -983,7 +983,7 @@ function armDispatch(){
   fetch("/api/dispatch",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({dry:true})})
     .then(function(r){return r.json();})
     .then(function(d){
-      if(!d.plan||!d.plan.length){toast("no open tickets to dispatch");return;}
+      if(!d.plan||!d.plan.length){toast("nothing queued to launch");return;}
       pending=d;
       el("confirmH").innerHTML=I.warn+"about to launch "+d.plan.length+" agent"+(d.plan.length===1?"":"s")+
         " &middot; permission mode "+esc(d.mode);
@@ -1009,7 +1009,7 @@ function doDispatch(){
         (bad.length?" - "+bad.length+" tool not found":""), bad.length>0);
       if(ok.length){sel=ok[0].id;selLog=null;autoPicked=true;}
       refresh();
-    }).catch(function(){toast("dispatch failed",true);});
+    }).catch(function(){toast("launch failed",true);});
 }
 
 /* ---------- settings ----------
@@ -1037,7 +1037,7 @@ function setRender(){
     var f=(t.flags[setPick]||[]).join(" ");
     return '<div class="flagrow"><span class="ft">'+esc(t.tool)+'</span>'+
       '<span class="ff">'+esc(f||"no extra flags")+"</span></div>";
-  }).join("")||'<div class="flagrow"><span class="ff">no dispatchable tools</span></div>';
+  }).join("")||'<div class="flagrow"><span class="ff">no launchable tools</span></div>';
 }
 function setApply(mode){
   setPick=mode; setRender();
@@ -1047,7 +1047,7 @@ function setApply(mode){
     .then(function(d){
       if(d.error){toast(d.error,true);return;}
       setData=d; setPick=d.permissionMode; setRender();
-      toast("permission mode is now "+d.permissionMode+" - every dispatched tool follows it");
+      toast("permission mode is now "+d.permissionMode+" - every tool you launch follows it");
       refresh();
     }).catch(function(){toast("could not save the mode",true);});
 }
@@ -1122,12 +1122,12 @@ el("bell").addEventListener("click",bellClick);
 el("pfx").innerHTML=I.chev;
 el("planBtn").innerHTML=I.spark+"Plan it";
 el("addBtn").innerHTML=I.plus+"Add as one task";
-el("dispatchBtn").innerHTML=I.play+"Dispatch";
+el("dispatchBtn").innerHTML=I.play+"Launch";
 el("planBtn").onclick=planIt;
 el("addBtn").onclick=addTask;
 el("dispatchBtn").onclick=armDispatch;
 el("confirmGo").onclick=doDispatch;
-el("confirmNo").onclick=function(){el("confirm").style.display="none";pending=null;toast("dispatch cancelled");};
+el("confirmNo").onclick=function(){el("confirm").style.display="none";pending=null;toast("launch cancelled");};
 el("task").addEventListener("keydown",function(e){
   // Enter is the conversational path; shift+enter is the literal one.
   if(e.key==="Enter")e.shiftKey?addTask():planIt();

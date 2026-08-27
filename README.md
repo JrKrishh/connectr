@@ -267,7 +267,7 @@ over, and that can be another tool *or another model of the same tool*:
 
 ```
 ◆ docs|readme|research|…
-    rule says gemini · outcomes: gemini:gemini-2.5-pro 3w/0l · gemini:gemini-2.5-flash 1w/1l
+    rule says gemini · record: gemini:gemini-2.5-pro 3-0 · gemini:gemini-2.5-flash 1-1
     pick: gemini:gemini-2.5-pro  << LEARNED override
 ```
 
