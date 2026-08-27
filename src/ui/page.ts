@@ -154,6 +154,7 @@ export const UI_HTML = `<!doctype html>
     border:1px solid var(--border);background:var(--surface);color:var(--ink)}
   .review button:hover{border-color:var(--accent)}
   .review button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  .review button.stop{background:var(--red);border-color:var(--red);color:#fff}
   .review.warn{border-color:var(--amber);background:var(--amber-dim)}
   .review.warn .rv-t b{color:var(--amber)}
 
@@ -784,7 +785,10 @@ function renderDetail(s){
   }else if(t.tree&&t.tree.dirty){
     h+='<div class="review warn"><span class="rv-t"><b>unsaved edits</b> sit in this ticket&#39;s workspace - nothing to merge yet</span></div>';
   }
-  if(t.status==="in_progress"&&t.owner&&!s.agents.some(function(a){return a.id===t.owner&&a.live;})){
+  if(t.running){
+    h+='<div class="review"><span class="rv-t">This agent is <b>running now</b>. Stopping puts the ticket back on the board - not counted against the tool.</span>'+
+      '<button class="stop" id="stopBtn">Stop agent</button></div>';
+  }else if(t.status==="in_progress"&&t.owner&&!s.agents.some(function(a){return a.id===t.owner&&a.live;})){
     h+='<div class="review warn"><span class="rv-t">The agent on this ticket looks <b>gone</b> - reopen it and launch again</span>'+
       '<button class="go" id="reopenBtn">Reopen</button></div>';
   }
@@ -811,6 +815,7 @@ function renderDetail(s){
   var db=el("diffBtn");if(db)db.onclick=function(){diffMode=!diffMode;if(last)render(last);};
   var mb=el("mergeBtn");if(mb)mb.onclick=function(){doMerge(t.id);};
   var rb=el("reopenBtn");if(rb)rb.onclick=function(){doReopen();};
+  var sb=el("stopBtn");if(sb)sb.onclick=function(){doStop(t.id);};
 
   if(diffMode){
     stopLog();
@@ -963,6 +968,13 @@ function doReopen(){
     toast(n?("reopened "+n+" ticket"+(n===1?"":"s")+" - launch again to retry"):"nothing to reopen - the agent may still be alive");
     refresh();
   }).catch(function(){});
+}
+function doStop(id){
+  toast("stopping "+id+"...");
+  fetch("/api/stop",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticket:id})})
+    .then(function(r){return r.json();})
+    .then(function(d){toast(d.message||(d.ok?"stopped":"could not stop"),!d.ok);refresh();})
+    .catch(function(){toast("could not reach the connectr server",true);});
 }
 
 /* ---------- actions ---------- */

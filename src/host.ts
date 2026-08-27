@@ -1,4 +1,5 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { agentTarget, resolveToolSmart, targetKey } from "./learn.js";
 import { plannerTicket } from "./planner.js";
 import { parseTaskInput, type ConnectrConfig } from "./routing.js";
@@ -125,6 +126,7 @@ export async function recordAttempt(
     const t = d.tickets.find((x) => x.id === ticketId);
     if (!t) return;
     (t.attempts ??= []).push({ target, at: new Date().toISOString(), outcome, detail });
+    t.run = undefined; // the process is over either way
     if (outcome === "failed" && t.status !== "closed") {
       t.status = "open";
       t.owner = undefined;
@@ -138,6 +140,72 @@ export async function recordAttempt(
   });
 }
 
+/** Remember the process behind a launched ticket, so it can be stopped and so a restarted
+ * host can distinguish a live run from an orphaned one. */
+export async function recordRun(store: Store, ticketId: string, pid: number, logFile: string): Promise<void> {
+  await store.mutate((d) => {
+    const t = d.tickets.find((x) => x.id === ticketId);
+    if (t) t.run = { pid, startedAt: new Date().toISOString(), logFile };
+  });
+}
+
+/** Is this pid still a live process? EPERM means it exists but isn't ours - still alive. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Kill a dispatched agent's whole process tree, cross-platform. Detached children are
+ * their own group on posix (negative pid) and need taskkill /T on Windows. */
+export function killTree(pid: number): void {
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } else {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        process.kill(pid, "SIGTERM");
+      }
+    }
+  } catch {
+    /* already gone */
+  }
+}
+
+export interface StopResult {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Stop a running ticket at the user's request. This is not a failure - the tool did not
+ * lose, the human intervened - so it records no attempt and no routing loss; it just kills
+ * the process and puts the ticket back on the board. The caller must mark the ticket in a
+ * "stopping" set first so the child's own exit handler does not re-file it as a failure.
+ */
+export async function stopRun(store: Store, ticketId: string): Promise<StopResult> {
+  const t = store.read().tickets.find((x) => x.id === ticketId);
+  if (!t) return { ok: false, message: `no ticket ${ticketId}` };
+  const pid = t.run?.pid;
+  if (!pid) return { ok: false, message: `${ticketId} has no running agent to stop` };
+  killTree(pid);
+  await store.mutate((d) => {
+    const tk = d.tickets.find((x) => x.id === ticketId);
+    if (!tk) return;
+    tk.run = undefined;
+    tk.owner = undefined;
+    if (tk.status !== "closed") tk.status = "open";
+    tk.notes.push({ agent: "connectr", text: "stopped by you - back on the board", ts: new Date().toISOString() });
+    tk.updatedAt = new Date().toISOString();
+  });
+  return { ok: true, message: `stopped ${ticketId}` };
+}
+
 /**
  * Tickets left in_progress by an agent that is no longer alive. A detached dispatch cannot
  * report its own death, so this is how those runs become data instead of a stuck board.
@@ -145,10 +213,16 @@ export async function recordAttempt(
 export async function sweepDeadRuns(store: Store): Promise<{ id: string; target: string }[]> {
   const d = store.read();
   const live = new Set(liveAgentIds(d));
-  const stuck = d.tickets.filter((t) => t.status === "in_progress" && t.owner && !live.has(t.owner));
+  // A ticket is orphaned if its recorded process is gone (fast and exact - survives a host
+  // restart), or, for older runs with no pid, if its owner stopped heartbeating over MCP.
+  const stuck = d.tickets.filter((t) => {
+    if (t.status !== "in_progress") return false;
+    if (t.run?.pid) return !pidAlive(t.run.pid);
+    return t.owner && !live.has(t.owner);
+  });
   const swept: { id: string; target: string }[] = [];
   for (const t of stuck) {
-    const target = t.routedTo ? targetKey(t.routedTo.tool, t.routedTo.model) : agentTarget(d, t.owner!);
+    const target = t.routedTo ? targetKey(t.routedTo.tool, t.routedTo.model) : t.owner ? agentTarget(d, t.owner) : "unknown";
     await recordAttempt(store, t.id, target, "failed", "agent gone");
     swept.push({ id: t.id, target });
   }

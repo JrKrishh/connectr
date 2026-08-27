@@ -41,6 +41,14 @@ export interface RunAttempt {
   detail?: string;
 }
 
+/** The live process behind a dispatched ticket, so it can be stopped and so a restarted
+ * host can tell a still-running run from an orphaned one by checking the pid. */
+export interface RunHandle {
+  pid: number;
+  startedAt: string;
+  logFile: string;
+}
+
 export interface Ticket {
   id: string;
   title: string;
@@ -55,6 +63,7 @@ export interface Ticket {
   updatedAt: string;
   routedTo?: RoutedTo;
   attempts?: RunAttempt[];
+  run?: RunHandle;
 }
 
 export interface RoutedTo {

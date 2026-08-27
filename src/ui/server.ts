@@ -1,7 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, recordAttempt, sweepDeadRuns, type LaunchSummary } from "../host.js";
+import { addTaskFromInput, launchPlanned, pidAlive, planIntent, planOpenTickets, recordAttempt, recordRun, stopRun, sweepDeadRuns, type LaunchSummary } from "../host.js";
 import type { Ticket } from "../types.js";
 import { diffWorktree, listWorktrees, mergeWorktree, type TreeStatus } from "../worktree.js";
 import { factKind } from "../memory.js";
@@ -40,7 +40,16 @@ async function recordFailure(id: string, target: string, detail: string): Promis
   }
 }
 
+// Tickets the user deliberately stopped. Killing the child fires its exit handler, and
+// without this guard reconcile would re-file a user-initiated stop as a routing failure.
+const stopping = new Set<string>();
+
 async function reconcile(ticket: Ticket, code: number | null): Promise<void> {
+  if (stopping.has(ticket.id)) {
+    stopping.delete(ticket.id);
+    dispatched.delete(ticket.id);
+    return; // the stop already put the ticket back on the board; not a failure
+  }
   const fresh = new Store().read().tickets.find((x) => x.id === ticket.id);
   const rt = ticket.routedTo!;
   const target = rt.model ? `${rt.tool}:${rt.model}` : rt.tool;
@@ -59,8 +68,12 @@ async function reconcile(ticket: Ticket, code: number | null): Promise<void> {
  */
 async function settleLaunches(launches: LaunchSummary[]): Promise<void> {
   for (const l of launches) {
-    if (l.ok) dispatched.add(l.id);
-    else await recordFailure(l.id, l.model ? `${l.tool}:${l.model}` : l.tool, "tool not available to launch");
+    if (l.ok) {
+      dispatched.add(l.id);
+      if (l.pid) await recordRun(new Store(), l.id, l.pid, l.logFile);
+    } else {
+      await recordFailure(l.id, l.model ? `${l.tool}:${l.model}` : l.tool, "tool not available to launch");
+    }
   }
 }
 
@@ -147,6 +160,7 @@ function stateView(): unknown {
       lastNote: t.notes.at(-1)?.text ?? null,
       updatedAt: t.updatedAt,
       notes: t.notes,
+      running: !!(t.run?.pid && pidAlive(t.run.pid)),
       runs: allRuns.filter((r) => r.file.startsWith(`${t.id}-`)).map((r) => r.file),
       tree: (() => {
         const w = trees.find((x) => x.ticket === t.id);
@@ -342,6 +356,19 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     json(res, 200, { swept });
     return;
   }
+  if (req.method === "POST" && url.pathname === "/api/stop") {
+    const body = await readBody(req);
+    const ticket = String(body.ticket ?? "");
+    if (!TICKET_ID.test(ticket)) {
+      json(res, 400, { error: "ticket must look like t3" });
+      return;
+    }
+    stopping.add(ticket); // before the kill, so the child's exit handler skips it
+    const result = await stopRun(new Store(), ticket);
+    if (!result.ok) stopping.delete(ticket);
+    json(res, result.ok ? 200 : 409, result);
+    return;
+  }
   if (url.pathname === "/api/settings" && (req.method === "GET" || req.method === "POST")) {
     const config = loadConfig(projectRoot());
     if (req.method === "POST") {
@@ -416,6 +443,9 @@ export function startUi(port: number): http.Server {
     handle(req, res).catch((e) => json(res, 500, { error: (e as Error).message }));
   });
   server.listen(port, "127.0.0.1");
+  // A previous host may have died with runs in flight. Their pids are gone, so reconcile
+  // them now rather than leaving the board stuck in_progress until someone notices.
+  sweepDeadRuns(new Store()).catch(() => {});
   const auto = setInterval(autoTick, Number(process.env.CONNECTR_AUTO_TICK ?? 5000));
   server.on("close", () => clearInterval(auto));
   return server;

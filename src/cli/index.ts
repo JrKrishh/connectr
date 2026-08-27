@@ -7,7 +7,7 @@ import { ISOLATIONS, PERMISSION_MODES, loadConfig, saveConfig, type Isolation, t
 import { isGitRepo, listWorktrees, mergeWorktree } from "../worktree.js";
 import { MODE_INFO, toolRegistry } from "../tools.js";
 import { detectTools, suggestOrchestra, PLAN_TEMPLATE } from "../detect.js";
-import { planIntent, planOpenTickets, prepareWorkspace, recordAttempt, sweepDeadRuns } from "../host.js";
+import { planIntent, planOpenTickets, prepareWorkspace, recordAttempt, recordRun, stopRun, sweepDeadRuns } from "../host.js";
 import { plannerTicket } from "../planner.js";
 import { MIN_EVIDENCE, learnRoutes, resolveToolSmart } from "../learn.js";
 import { launchTicket, toolKnown } from "../spawn.js";
@@ -375,6 +375,7 @@ program
         return null;
       }
       const model = t.routedTo!.model;
+      if (child.pid) void recordRun(new Store(), t.id, child.pid, logFile);
       console.log(
         `launched ${t.id} -> ${tool}${model ? ` (${model})` : ""} (pid ${child.pid})` +
           (ws.worktree ? `\n          tree ${ws.worktree}` : "")
@@ -433,6 +434,16 @@ program
     }
     for (const s of swept) console.log(`reopened ${s.id} (${s.target} is gone) - counted as a loss`);
     console.log(`\n${swept.length} ticket(s) back on the board. Retry with: connectr run`);
+  });
+
+program
+  .command("stop")
+  .description("Stop a running agent and put its ticket back on the board (not counted as a failure)")
+  .argument("<ticket>", "ticket id, e.g. t3")
+  .action(async (ticket: string) => {
+    const result = await stopRun(new Store(), ticket);
+    console.log(result.message);
+    if (!result.ok) process.exitCode = 1;
   });
 
 program

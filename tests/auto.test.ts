@@ -28,6 +28,8 @@ beforeAll(async () => {
 
   const sleeper = path.join(root, "sleeper.cjs");
   fs.writeFileSync(sleeper, "setTimeout(function(){process.exit(0)},300);\n");
+  const longSleeper = path.join(root, "long-sleeper.cjs");
+  fs.writeFileSync(longSleeper, "setTimeout(function(){process.exit(0)},60000);\n");
   fs.mkdirSync(path.join(root, ".connectr"), { recursive: true });
   fs.writeFileSync(
     path.join(root, ".connectr", "config.json"),
@@ -128,6 +130,73 @@ describe("auto-continue", () => {
     const runs = fs.readdirSync(path.join(process.env.CONNECTR_STORE!, "runs")).filter((f) => f.startsWith(`${id}-`));
     expect(runs.length).toBeLessThanOrEqual(2);
   }, 25_000);
+
+  it("stops a running agent, kills its process, and does not count it as a routing loss", async () => {
+    const alive = (p: number) => {
+      try {
+        process.kill(p, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ autoContinue: false }),
+    });
+    const id = await addTask("long job to interrupt @fake");
+    // Stand in for a live dispatched run with a real long-lived process. (The dashboard's
+    // own detached launch shapes have a separate Windows problem; stopRun itself is
+    // platform-independent - it kills a pid and mutates the ticket - so it is tested directly.)
+    const { spawn } = await import("node:child_process");
+    const longSleeper = path.join(root, "long-sleeper.cjs");
+    const proc = spawn(process.execPath, [longSleeper], { detached: true, stdio: "ignore" });
+    proc.unref();
+    const pid = proc.pid!;
+    await new Store().mutate((d) => {
+      const t = d.tickets.find((x) => x.id === id)!;
+      t.status = "in_progress";
+      t.owner = "a1";
+      t.run = { pid, startedAt: new Date().toISOString(), logFile: "x.log" };
+    });
+    expect(alive(pid)).toBe(true);
+    expect((await (await fetch(base + "/api/state")).json()).tickets.find((t: { id: string }) => t.id === id).running).toBe(true);
+
+    const res = await fetch(base + "/api/stop", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ticket: id }),
+    });
+    expect(res.status).toBe(200);
+
+    const d2 = Date.now() + 10_000;
+    while (Date.now() < d2 && alive(pid)) await sleep(150);
+    expect(alive(pid)).toBe(false); // process actually killed
+
+    const t = new Store().read().tickets.find((x) => x.id === id)!;
+    expect(t.status).toBe("open"); // back on the board
+    expect(t.run).toBeUndefined();
+    expect((t.attempts ?? []).filter((a) => a.outcome === "failed")).toHaveLength(0); // NOT a routing loss
+    expect(t.notes.some((n) => n.text.includes("stopped by you"))).toBe(true);
+  }, 30_000);
+
+  it("sweeps a run whose process is dead by pid, without waiting for the MCP window", async () => {
+    const id = await addTask("orphaned by a host crash @fake");
+    const store = new Store();
+    await store.mutate((data) => {
+      const t = data.tickets.find((x) => x.id === id)!;
+      t.status = "in_progress";
+      t.owner = "host-that-died";
+      t.run = { pid: 2147480000, startedAt: new Date().toISOString(), logFile: "x.log" }; // a pid that isn't alive
+    });
+    const swept = await (await fetch(base + "/api/sweep", { method: "POST" })).json();
+    expect(swept.swept.map((s: { id: string }) => s.id)).toContain(id);
+    const t = new Store().read().tickets.find((x) => x.id === id)!;
+    expect(t.status).toBe("open");
+    expect(t.run).toBeUndefined();
+    expect((t.attempts ?? []).some((a) => a.outcome === "failed" && a.detail === "agent gone")).toBe(true);
+  }, 15_000);
 
   it("launches nothing once auto-continue is switched off", async () => {
     const res = await fetch(base + "/api/settings", {
