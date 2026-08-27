@@ -230,6 +230,30 @@ export const UI_HTML = `<!doctype html>
   .hint{margin-top:8px;font-size:11.5px;color:var(--faint);display:flex;gap:14px;flex-wrap:wrap}
   .hint code{font-family:var(--mono);color:var(--muted)}
 
+  /* shown only when the page is running inside the desktop shell */
+  .shellbtn{display:none;align-items:center;gap:5px;margin-left:auto;background:none;
+    border:1px solid var(--border);border-radius:999px;color:var(--muted);
+    padding:3px 10px;font-size:11.5px;transition:border-color .14s ease,color .14s ease}
+  .shellbtn:hover{border-color:var(--accent);color:var(--accent)}
+  body.shell .shellbtn{display:inline-flex}
+
+  .pal{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:60;
+    display:flex;align-items:flex-start;justify-content:center;padding-top:14vh}
+  .pal-box{width:min(560px,92vw);background:var(--surface);border:1px solid var(--border);
+    border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+  .pal-box input{width:100%;background:none;border:none;outline:none;color:var(--ink);
+    font:14.5px var(--sans);padding:15px 17px;border-bottom:1px solid var(--border)}
+  .pal-box input::placeholder{color:var(--faint)}
+  .pal-list{max-height:46vh;overflow:auto;padding:6px}
+  .pal-i{display:flex;flex-direction:column;gap:1px;padding:9px 11px;border-radius:var(--r-sm);cursor:pointer}
+  .pal-i.on{background:var(--raised)}
+  .pal-i .pal-n{font-size:13.5px;color:var(--ink)}
+  .pal-i .pal-p{font-family:var(--mono);font-size:11px;color:var(--faint);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pal-none{padding:16px;text-align:center;color:var(--faint);font-size:13px}
+  .pal-foot{border-top:1px solid var(--border);padding:8px 14px;
+    font-family:var(--mono);font-size:10.5px;color:var(--faint)}
+
   #toast{position:fixed;left:50%;bottom:104px;transform:translateX(-50%) translateY(8px);
     background:var(--raised);border:1px solid var(--border);color:var(--ink);
     padding:9px 15px;border-radius:999px;font-size:12.5px;box-shadow:var(--shadow);
@@ -256,6 +280,7 @@ export const UI_HTML = `<!doctype html>
     <div class="brand">
       <span class="mark" id="mark"></span>
       <span class="name">connect<b>r</b></span>
+      <button class="shellbtn" id="homeBtn" title="Back to projects (Ctrl+O)">Projects</button>
     </div>
     <div class="proj">
       <span class="pname" id="proj"></span>
@@ -320,6 +345,13 @@ export const UI_HTML = `<!doctype html>
       </div>
     </div>
   </main>
+</div>
+<div class="pal" id="palette" hidden>
+  <div class="pal-box">
+    <input id="palInput" autocomplete="off" spellcheck="false" placeholder="Switch project…">
+    <div class="pal-list" id="palList"></div>
+    <div class="pal-foot">&uarr;&darr; move &middot; enter open &middot; esc close</div>
+  </div>
 </div>
 <div id="toast"></div>
 
@@ -755,6 +787,61 @@ function doDispatch(){
     }).catch(function(){toast("dispatch failed",true);});
 }
 
+/* ---------- desktop shell ----------
+   The Electron preload exposes window.connectr to whatever page it loads, including this
+   one - so the dashboard can offer a way back to the picker and a Ctrl+K switcher when it
+   is running inside the app, and stay a plain web page when it is not. */
+var SHELL=!!(window.connectr&&window.connectr.listProjects&&window.connectr.openProject);
+var palAll=[], palShown=[], palIdx=0;
+
+function palOpen(){
+  if(!SHELL){toast("switching projects needs the ConnectR desktop app");return;}
+  window.connectr.listProjects().then(function(ps){
+    palAll=ps||[]; palIdx=0;
+    el("palInput").value="";
+    palRender();
+    el("palette").hidden=false;
+    el("palInput").focus();
+  }).catch(function(){toast("could not read your projects",true);});
+}
+function palClose(){el("palette").hidden=true;}
+function palRender(){
+  var q=el("palInput").value.toLowerCase();
+  palShown=palAll.filter(function(p){return (p.name+" "+p.path).toLowerCase().indexOf(q)>=0;});
+  if(palIdx>=palShown.length)palIdx=Math.max(0,palShown.length-1);
+  el("palList").innerHTML=palShown.map(function(p,i){
+    return '<div class="pal-i'+(i===palIdx?" on":"")+'" data-pi="'+i+'">'+
+      '<span class="pal-n">'+esc(p.name)+'</span>'+
+      '<span class="pal-p">'+esc(p.path)+'</span></div>';
+  }).join("")||'<div class="pal-none">no projects match</div>';
+}
+function palChoose(i){
+  var p=palShown[i];
+  if(!p)return;
+  palClose();
+  toast("opening "+p.name+"\\u2026");
+  window.connectr.openProject(p.path).then(function(r){
+    if(r&&r.ok===false)toast(r.error||"could not open that project",true);
+  }).catch(function(){});
+}
+
+if(SHELL){
+  document.body.classList.add("shell");
+  el("homeBtn").onclick=function(){window.connectr.goHome();};
+  el("palInput").addEventListener("input",palRender);
+  el("palInput").addEventListener("keydown",function(e){
+    if(e.key==="ArrowDown"){e.preventDefault();palIdx=Math.min(palIdx+1,palShown.length-1);palRender();}
+    else if(e.key==="ArrowUp"){e.preventDefault();palIdx=Math.max(palIdx-1,0);palRender();}
+    else if(e.key==="Enter"){e.preventDefault();palChoose(palIdx);}
+    else if(e.key==="Escape"){e.preventDefault();palClose();}
+  });
+  el("palList").addEventListener("click",function(e){
+    var row=e.target.closest?e.target.closest(".pal-i"):null;
+    if(row)palChoose(Number(row.getAttribute("data-pi")));
+  });
+  el("palette").addEventListener("click",function(e){if(e.target===el("palette"))palClose();});
+}
+
 /* ---------- wiring ---------- */
 el("mark").innerHTML=I.logo;
 el("pfx").innerHTML=I.chev;
@@ -780,6 +867,9 @@ document.addEventListener("click",function(e){
 });
 document.addEventListener("keydown",function(e){
   var typing=document.activeElement&&document.activeElement.tagName==="INPUT";
+  if((e.ctrlKey||e.metaKey)&&(e.key==="k"||e.key==="K")){e.preventDefault();palOpen();return;}
+  if((e.ctrlKey||e.metaKey)&&(e.key==="o"||e.key==="O")&&SHELL){e.preventDefault();window.connectr.goHome();return;}
+  if(!el("palette").hidden)return; // the palette owns the keyboard while it is open
   if(e.key==="Escape"){
     if(el("confirm").style.display==="block"){el("confirm").style.display="none";pending=null;return;}
     if(!typing&&sel){sel=null;selLog=null;stopLog();if(last)render(last);}
