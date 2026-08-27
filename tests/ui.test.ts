@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type http from "node:http";
+import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { startUi } from "../src/ui/server.js";
 import { UI_HTML } from "../src/ui/page.js";
@@ -269,6 +269,68 @@ describe("connectr ui server", () => {
   it("blocks log path traversal", async () => {
     const res = await fetch(base + "/api/log?file=..%2F..%2Fstore.json");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("localhost origin guard", () => {
+  // Raw requests so we can forge Origin and Host the way a browser or an attacker would;
+  // node's fetch sends neither, which is exactly why the normal tests pass unguarded.
+  function raw(
+    method: string,
+    p: string,
+    headers: Record<string, string>,
+    body?: string
+  ): Promise<{ status: number; body: string }> {
+    const port = (server.address() as AddressInfo).port;
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: "127.0.0.1", port, method, path: p, headers }, (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+      });
+      req.on("error", reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  }
+
+  it("refuses a cross-origin POST even as a text/plain body that skips preflight", async () => {
+    const before = (await (await fetch(base + "/api/settings")).json()).permissionMode;
+    const res = await raw(
+      "POST",
+      "/api/settings",
+      { origin: "http://evil.example", "content-type": "text/plain" },
+      JSON.stringify({ permissionMode: "yolo", autoContinue: true })
+    );
+    expect(res.status).toBe(403);
+    // the drive-by must not have changed anything
+    expect((await (await fetch(base + "/api/settings")).json()).permissionMode).toBe(before);
+  });
+
+  it("refuses a non-loopback Host (DNS rebinding)", async () => {
+    const res = await raw("GET", "/api/state", { host: "evil.example" });
+    expect(res.status).toBe(403);
+  });
+
+  it("allows a same-origin POST", async () => {
+    const port = (server.address() as AddressInfo).port;
+    const res = await raw(
+      "POST",
+      "/api/settings",
+      { origin: `http://127.0.0.1:${port}`, "content-type": "application/json" },
+      JSON.stringify({ permissionMode: "auto" })
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("allows a POST with no Origin (desktop main process, curl, tests)", async () => {
+    const res = await raw(
+      "POST",
+      "/api/settings",
+      { "content-type": "application/json" },
+      JSON.stringify({ permissionMode: "auto" })
+    );
+    expect(res.status).toBe(200);
   });
 });
 

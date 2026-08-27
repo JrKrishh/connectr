@@ -1,7 +1,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, recordAttempt, sweepDeadRuns } from "../host.js";
+import { addTaskFromInput, launchPlanned, planIntent, planOpenTickets, recordAttempt, sweepDeadRuns, type LaunchSummary } from "../host.js";
 import type { Ticket } from "../types.js";
 import { diffWorktree, listWorktrees, mergeWorktree, type TreeStatus } from "../worktree.js";
 import { factKind } from "../memory.js";
@@ -21,29 +21,46 @@ const MAX_AUTO_ATTEMPTS = 2;
  * failed attempt (recorded, reopened, counted as a routing loss) - the same contract
  * `connectr run` applies, but for the detached children this host launches.
  */
-async function reconcile(ticket: Ticket, code: number | null): Promise<void> {
+async function recordFailure(id: string, target: string, detail: string): Promise<void> {
   const store = new Store();
-  const fresh = store.read().tickets.find((x) => x.id === ticket.id);
+  await recordAttempt(store, id, target, "failed", detail);
+  dispatched.delete(id); // eligible again - routing now knows about the loss
+  const fails = (store.read().tickets.find((x) => x.id === id)?.attempts ?? []).filter(
+    (a) => a.outcome === "failed"
+  ).length;
+  if (fails >= MAX_AUTO_ATTEMPTS && loadConfig(projectRoot()).autoContinue) {
+    await store.mutate((d) => {
+      const t = d.tickets.find((x) => x.id === id);
+      t?.notes.push({
+        agent: "connectr",
+        text: `${fails} runs have failed - auto-continue is leaving this one for you; press Launch to retry it`,
+        ts: new Date().toISOString(),
+      });
+    });
+  }
+}
+
+async function reconcile(ticket: Ticket, code: number | null): Promise<void> {
+  const fresh = new Store().read().tickets.find((x) => x.id === ticket.id);
   const rt = ticket.routedTo!;
   const target = rt.model ? `${rt.tool}:${rt.model}` : rt.tool;
   if (fresh && fresh.status !== "closed") {
-    await recordAttempt(store, ticket.id, target, "failed", `exited ${code ?? "?"} without closing`);
-    dispatched.delete(ticket.id); // eligible again - routing now knows about the loss
-    const fails = ((store.read().tickets.find((x) => x.id === ticket.id)?.attempts ?? [])).filter(
-      (a) => a.outcome === "failed"
-    ).length;
-    if (fails >= MAX_AUTO_ATTEMPTS && loadConfig(projectRoot()).autoContinue) {
-      await store.mutate((d) => {
-        const t = d.tickets.find((x) => x.id === ticket.id);
-        t?.notes.push({
-          agent: "connectr",
-          text: `${fails} runs have failed - auto-continue is leaving this one for you; press Launch to retry it`,
-          ts: new Date().toISOString(),
-        });
-      });
-    }
+    await recordFailure(ticket.id, target, `exited ${code ?? "?"} without closing`);
   } else {
-    await recordAttempt(store, ticket.id, target, "completed");
+    await recordAttempt(new Store(), ticket.id, target, "completed");
+  }
+}
+
+/**
+ * A launch that produced no child (the routed tool isn't installed) must be booked as a
+ * failed attempt too - otherwise the auto tick, which excludes only tickets already in
+ * `dispatched` or past the retry cap, would relaunch it every few seconds forever, one new
+ * log file each time, and never park it.
+ */
+async function settleLaunches(launches: LaunchSummary[]): Promise<void> {
+  for (const l of launches) {
+    if (l.ok) dispatched.add(l.id);
+    else await recordFailure(l.id, l.model ? `${l.tool}:${l.model}` : l.tool, "tool not available to launch");
   }
 }
 
@@ -60,7 +77,7 @@ async function autoTick(): Promise<void> {
     );
     if (!plan.length) return;
     const launches = launchPlanned(plan, process.cwd(), store.dir, config, true, reconcile);
-    for (const l of launches) if (l.ok) dispatched.add(l.id);
+    await settleLaunches(launches);
   } catch {
     /* a bad tick must not kill the interval */
   } finally {
@@ -169,8 +186,37 @@ function readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/**
+ * The dashboard binds to loopback but the user's own browser can still reach it, so a page
+ * on any site can fire requests at it. Two checks close that:
+ *  - Host must be loopback. A DNS-rebinding attack points its domain at 127.0.0.1 but the
+ *    browser still sends Host: attacker.com, so this rejects it.
+ *  - A state-changing request that carries an Origin must be same-origin. A cross-site
+ *    fetch always sends the attacker's Origin (even text/plain, which skips preflight), so
+ *    it fails the match; our own page sends our origin. A request with no Origin is a
+ *    non-browser client (the desktop main process posts /api/plan this way, curl, tests) -
+ *    not a CSRF vector, since an attacker cannot make a victim's browser omit Origin.
+ */
+function originGuard(req: http.IncomingMessage): string | null {
+  const host = req.headers.host ?? "";
+  const hostname = host.replace(/:\d+$/, "");
+  if (host && !LOOPBACK.has(hostname)) return "host not allowed";
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const origin = req.headers.origin;
+    if (origin && origin !== `http://${host}` && origin !== `https://${host}`) return "cross-origin request refused";
+  }
+  return null;
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
+  const denied = originGuard(req);
+  if (denied) {
+    json(res, 403, { error: denied });
+    return;
+  }
   if (req.method === "GET" && url.pathname === "/") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(UI_HTML);
@@ -341,7 +387,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     // Planning is a normal dispatch: the planner ticket goes out detached and the board
     // shows it working, so the page needs no special "thinking" state.
     const [launch] = launchPlanned([result.ticket!], process.cwd(), store.dir, config, true, reconcile);
-    if (launch.ok) dispatched.add(launch.id);
+    await settleLaunches([launch]);
     json(res, 200, { ticket: result.ticket, launch });
     return;
   }
@@ -358,7 +404,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       return;
     }
     const launches = launchPlanned(plan, process.cwd(), store.dir, config, true, reconcile);
-    for (const l of launches) if (l.ok) dispatched.add(l.id);
+    await settleLaunches(launches);
     json(res, 200, { mode: config.permissionMode, launches });
     return;
   }

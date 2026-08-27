@@ -37,7 +37,10 @@ beforeAll(async () => {
         permissionMode: "auto",
         isolation: "off",
         autoContinue: true,
-        tools: [{ id: "fake", kind: "dispatch", bin: "node", args: [sleeper], prompt: "stdin", modes: { safe: [], auto: [], yolo: [] } }],
+        tools: [
+          { id: "fake", kind: "dispatch", bin: "node", args: [sleeper], prompt: "stdin", modes: { safe: [], auto: [], yolo: [] } },
+          { id: "ghost", kind: "dispatch", bin: "connectr-no-such-binary-xyz", args: ["{prompt}"], prompt: "stdin", modes: { safe: [], auto: [], yolo: [] } },
+        ],
       },
       null,
       2
@@ -95,6 +98,36 @@ describe("auto-continue", () => {
     const runs = fs.readdirSync(path.join(process.env.CONNECTR_STORE!, "runs")).filter((f) => f.startsWith(`${id}-`));
     expect(runs.length).toBe(2);
   }, 30_000);
+
+  it("parks a ticket routed to a missing tool instead of relaunching it forever", async () => {
+    await fetch(base + "/api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ autoContinue: true }),
+    });
+    const id = await addTask("build the thing @ghost");
+
+    // The tool doesn't exist, so no child ever spawns (ok:false). Poll until the retry cap.
+    const deadline = Date.now() + 15_000;
+    let fails = 0;
+    while (Date.now() < deadline) {
+      fails = (new Store().read().tickets.find((x) => x.id === id)!.attempts ?? []).filter(
+        (a) => a.outcome === "failed"
+      ).length;
+      if (fails >= 2) break;
+      await sleep(150);
+    }
+    expect(fails).toBe(2);
+
+    // The whole point: it stops at the cap, it does not spam a log file every tick.
+    await sleep(1500);
+    const t = new Store().read().tickets.find((x) => x.id === id)!;
+    expect((t.attempts ?? []).filter((a) => a.outcome === "failed").length).toBe(2);
+    expect(t.status).toBe("open");
+    expect(t.notes.some((n) => n.text.includes("auto-continue is leaving this one"))).toBe(true);
+    const runs = fs.readdirSync(path.join(process.env.CONNECTR_STORE!, "runs")).filter((f) => f.startsWith(`${id}-`));
+    expect(runs.length).toBeLessThanOrEqual(2);
+  }, 25_000);
 
   it("launches nothing once auto-continue is switched off", async () => {
     const res = await fetch(base + "/api/settings", {

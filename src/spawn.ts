@@ -102,14 +102,21 @@ export function buildCommand(
     const exe = findCodex();
     return exe ? { command: exe, args: rest } : null;
   }
+  // On posix, spawn(bin) surfaces a missing tool as an async ENOENT 'error' event, which
+  // spawnAgent turns into a logged failure - so no PATH precheck is needed here.
   if (platform !== "win32") return { command: bin, args: rest };
 
-  // On Windows these are npm .cmd shims. A joined shell string is only safe while every
-  // token is a fixed flag or a safeModel-validated id; the moment the prompt rides in
-  // argv it must go through cmd.exe as a real array or quoting will corrupt it.
+  // On Windows these are npm .cmd shims. Resolve the tool on PATH first: without this the
+  // stdin branch handed back a live `powershell -Command "gemini ..."` for a tool that
+  // isn't installed - the run "launched", died with "'gemini' is not recognized", and
+  // booked a false routing loss for a tool that never executed.
+  const exe = resolveOnPath(spec.bin ?? bin);
+  if (!exe) return null;
+
+  // A joined shell string is only safe while every token is a fixed flag or a
+  // safeModel-validated id; the moment the prompt rides in argv it must go through cmd.exe
+  // as a real array or quoting will corrupt it.
   if (promptDelivery === "arg") {
-    const exe = resolveOnPath(spec.bin ?? bin);
-    if (!exe) return null;
     return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/c", exe, ...rest] };
   }
   return { command: "powershell", args: ["-NoProfile", "-Command", argv.join(" ")] };
@@ -126,7 +133,11 @@ export function spawnAgent(opts: SpawnOptions): ChildProcess | null {
     prompt: opts.prompt,
   });
   if (!cmd) {
-    fs.appendFileSync(opts.logFile, header + "codex not found: install codex CLI or fix CODEX_CLI_PATH\n");
+    const hint =
+      opts.tool === "codex"
+        ? "codex not found: install codex CLI or fix CODEX_CLI_PATH"
+        : `${opts.tool} not found on PATH: install it, or check 'connectr doctor'`;
+    fs.appendFileSync(opts.logFile, header + hint + "\n");
     return null;
   }
   const env = {
@@ -154,6 +165,16 @@ export function spawnAgent(opts: SpawnOptions): ChildProcess | null {
     child.stdin?.end();
     child.on("close", () => logStream.end());
   }
+  // A spawn failure (missing binary on posix, EACCES) fires an async 'error' event; without
+  // a listener Node throws it and takes the whole host process down. Log it and let it
+  // surface as a normal non-zero exit that the caller reconciles.
+  child.on("error", (e) => {
+    try {
+      fs.appendFileSync(opts.logFile, `connectr: failed to start ${opts.tool} - ${(e as Error).message}\n`);
+    } catch {
+      /* nothing more we can do */
+    }
+  });
   return child;
 }
 
