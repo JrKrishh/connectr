@@ -57,6 +57,20 @@ describe("embedded page", () => {
     expect(script).toContain(String.raw`\s`); // not a bare "s"
     expect(script).not.toMatch(/https\?:\/\/\[\^s/); // the exact shape of the bug
   });
+
+  it("wires notifications as an opt-in that never fires while you watch", () => {
+    // opt-in and permission-gated, off by default
+    expect(script).toContain('localStorage.getItem("connectr-notify")==="1"');
+    expect(script).toContain('Notification.permission==="granted"');
+    expect(script).toContain("Notification.requestPermission");
+    // silent while the window has focus; title badge as the no-permission fallback
+    expect(script).toContain("document.hasFocus()");
+    expect(script).toContain('") connectr"');
+    // the three moments that matter: finished, agent gone, commits to review
+    expect(script).toContain("finished");
+    expect(script).toContain("its agent is gone");
+    expect(script).toContain("to review");
+  });
 });
 
 describe("connectr ui server", () => {

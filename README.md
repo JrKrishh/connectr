@@ -69,6 +69,12 @@ tails — updated live over SSE. Add tasks (same `@tool:model` syntax) and dispa
 tickets from the browser; dispatch always shows the plan and permission mode first and
 asks you to confirm.
 
+You don't have to babysit the tab. The title shows an unread badge whenever something
+happens while you are elsewhere, and the bell in the sidebar turns on native
+notifications for the three moments that matter: an agent finished, an agent died, or a
+ticket has commits waiting for review. Clicking one takes you straight to that ticket.
+Nothing fires while the window is focused.
+
 `connectr plan` is the front door: you describe an outcome, and ConnectR parks it on the
 board as a planner ticket and dispatches it. The agent that claims it reads your repo,
 the board and the shared memory, then creates the real tickets — titled so they route

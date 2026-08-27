@@ -52,6 +52,10 @@ export const UI_HTML = `<!doctype html>
   .brand .name{font-weight:650;letter-spacing:-.01em;font-size:15px}
   .brand .name b{color:var(--accent);font-weight:650}
   .proj{padding:0 16px 12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .bell{margin-left:auto;display:inline-flex;align-items:center;background:none;border:none;
+    padding:3px;cursor:pointer;color:var(--faint);border-radius:6px}
+  .bell:hover{color:var(--muted)}
+  .bell.on{color:var(--accent)}
   .proj .pname{font-size:12.5px;color:var(--muted);font-family:var(--mono);
     max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tag{font-family:var(--mono);font-size:10.5px;letter-spacing:.03em;text-transform:uppercase;
@@ -338,6 +342,7 @@ export const UI_HTML = `<!doctype html>
       <span class="pname" id="proj"></span>
       <span class="tag" id="mode"></span>
       <span class="tag" id="plan"></span>
+      <button class="bell" id="bell" title="Notify me when agents finish or need review"></button>
     </div>
     <div class="body scroll">
       <div class="grp" id="agentsGrp">
@@ -442,7 +447,8 @@ var I={
  chev:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
  warn:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5L21 19H3z"/><path d="M12 10v3.6M12 16.4v.1"/></svg>',
  spark:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9z"/><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>',
- idle:'<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6.5" r="2.4"/><circle cx="18" cy="6.5" r="2.4"/><circle cx="12" cy="17.5" r="2.4"/><path d="M8.4 6.5h7.2M7.3 8.6l3.4 6.8M16.7 8.6l-3.4 6.8"/></svg>'
+ idle:'<svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6.5" r="2.4"/><circle cx="18" cy="6.5" r="2.4"/><circle cx="12" cy="17.5" r="2.4"/><path d="M8.4 6.5h7.2M7.3 8.6l3.4 6.8M16.7 8.6l-3.4 6.8"/></svg>',
+ bell:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 16.5v-6a6 6 0 0 1 12 0v6l1.5 2.5H4.5z"/><path d="M10.2 21a2 2 0 0 0 3.6 0"/></svg>'
 };
 
 var sel=null, selLog=null, logTimer=null, logES=null, logBuf="", pending=null, last=null,
@@ -588,6 +594,81 @@ function toast(msg,isErr){
   clearTimeout(toastT);
   toastT=setTimeout(function(){t.className=isErr?"err":"";},4600);
 }
+
+/* ---------- notifications ----------
+   The dashboard already knows the moment an agent finishes, leaves commits to review,
+   or dies - all client-side, by comparing one SSE state push with the previous one.
+   Nothing fires while you are looking at the page; the title badge needs no permission,
+   native notifications are an opt-in bell. */
+var prevSnap=null, unseen=0;
+
+function notifySupported(){return typeof Notification!=="undefined";}
+function notifyOn(){
+  try{return localStorage.getItem("connectr-notify")==="1"&&notifySupported()&&Notification.permission==="granted";}
+  catch(e){return false;}
+}
+function paintBell(){
+  var b=el("bell"); if(!b)return;
+  b.innerHTML=I.bell;
+  b.className="bell"+(notifyOn()?" on":"");
+  b.title=notifyOn()?"Notifications on - click to turn off":"Notify me when agents finish or need review";
+}
+function bellClick(){
+  if(!notifySupported()){toast("notifications are not supported here",true);return;}
+  if(notifyOn()){
+    try{localStorage.setItem("connectr-notify","0");}catch(e){}
+    paintBell();toast("notifications off");return;
+  }
+  Notification.requestPermission().then(function(p){
+    if(p==="granted"){
+      try{localStorage.setItem("connectr-notify","1");}catch(e){}
+      toast("on - you will be tapped when agents finish or need review");
+    }else{toast("the browser blocked notifications",true);}
+    paintBell();
+  });
+}
+
+function noticeChanges(s){
+  var snap={},i,t;
+  for(i=0;i<s.tickets.length;i++){
+    t=s.tickets[i];
+    snap[t.id]={status:t.status,commits:t.tree?t.tree.commits:0,title:t.title,resolution:t.resolution};
+  }
+  if(prevSnap){
+    var evs=[];
+    for(var id in snap){
+      var now=snap[id],was=prevSnap[id];
+      if(!was)continue; // new tickets are the user's own doing
+      if(was.status!=="closed"&&now.status==="closed")
+        evs.push({id:id,title:id+" finished"+(now.resolution&&now.resolution!=="completed"?" ("+now.resolution+")":""),body:now.title});
+      else if(was.status==="in_progress"&&now.status==="open")
+        evs.push({id:id,title:id+" stopped - its agent is gone",body:now.title});
+      if(now.commits>0&&was.commits===0)
+        evs.push({id:id,title:id+" has "+now.commits+" commit"+(now.commits===1?"":"s")+" to review",body:now.title});
+    }
+    if(evs.length)deliver(evs);
+  }
+  prevSnap=snap;
+}
+
+function deliver(evs){
+  if(document.hasFocus())return; // you are already watching
+  unseen+=evs.length;
+  document.title="("+unseen+") connectr";
+  if(!notifyOn())return;
+  var show=evs.length>3
+    ?[{id:null,title:evs.length+" updates on the board",body:"agents finished or need review"}]
+    :evs;
+  for(var i=0;i<show.length;i++){
+    (function(ev){
+      try{
+        var n=new Notification(ev.title,{body:ev.body,tag:"connectr-"+(ev.id||"board")});
+        n.onclick=function(){window.focus();if(ev.id)select(ev.id);n.close();};
+      }catch(e){/* notification construction can throw on some platforms */}
+    })(show[i]);
+  }
+}
+window.addEventListener("focus",function(){unseen=0;document.title="connectr";});
 function rel(ts){
   var s=Math.max(0,Math.round((Date.now()-Date.parse(ts))/1000));
   if(s<60)return s+"s ago";
@@ -820,6 +901,7 @@ function followLog(file){
 /* ---------- state ---------- */
 function render(s){
   last=s;
+  noticeChanges(s);
   if(!autoPicked&&!sel){
     var running=s.tickets.filter(function(t){return t.status==="in_progress";});
     if(running.length){sel=running[0].id;autoPicked=true;}
@@ -1035,6 +1117,8 @@ if(SHELL){
 
 /* ---------- wiring ---------- */
 el("mark").innerHTML=I.logo;
+paintBell();
+el("bell").addEventListener("click",bellClick);
 el("pfx").innerHTML=I.chev;
 el("planBtn").innerHTML=I.spark+"Plan it";
 el("addBtn").innerHTML=I.plus+"Add as one task";
